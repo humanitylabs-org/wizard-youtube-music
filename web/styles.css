@@ -1,0 +1,18 @@
+/* YouTube Music connector. Shared look comes from wizard-ui.css. */
+.ytm-card { margin: 0 2px 12px; padding: 14px; border-radius: var(--r); background: var(--fill); display: grid; gap: 8px; }
+.ytm-card p { margin: 0; line-height: 1.45; }
+.ytm-card .wz-sec-h { padding: 0; }
+.ytm-req { background: var(--accent-soft); }
+.ytm-req b { font-size: 15px; }
+.ytm-state { font-size: 15px; font-weight: 600; }
+.ytm-state[data-state="ok"] { color: var(--accent); }
+.ytm-state[data-state="blocked"], .ytm-state[data-state="failed"] { color: var(--danger); }
+.ytm-small { font-size: 13px; color: var(--ink-3); }
+.ytm-small[hidden], #relay-form[hidden] { display: none; }
+.ytm-col { display: grid; gap: 8px; }
+.ytm-code { display: block; padding: 8px 10px; border-radius: var(--r-tile); background: var(--fill-2); font: 12px ui-monospace, Menlo, monospace; word-break: break-all; user-select: all; }
+.ytm-btn { justify-self: start; min-height: 40px; padding: 0 16px; border-radius: 99px; font-weight: 700; background: var(--fill-2); color: var(--ink); }
+.ytm-go { background: var(--accent); color: var(--on-accent); }
+.ytm-btn:disabled { opacity: .5; }
+.ytm-link { text-decoration: underline; color: inherit; padding: 0 4px; }
+.ytm-foot { margin: 4px 6px 0; }

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en" data-app="wizard-youtube-music">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
+  <title>YouTube Music</title>
+  <script src="boot.js"></script>
+  <link rel="stylesheet" href="wizard-ui.css">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="theme-client.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <div class="wz-app">
+    <header class="wz-head"><h1>YouTube Music</h1></header>
+    <main class="wz-scroll">
+      <section class="ytm-card ytm-req" aria-label="Requirement">
+        <b>Needs a home internet connection</b>
+        <p>YouTube blocks cloud servers in data centers. This works on a Wizard at home, or on a cloud Wizard that sends YouTube through a computer at home (a home relay).</p>
+      </section>
+
+      <section class="ytm-card" aria-labelledby="st-h">
+        <h2 class="wz-sec-h" id="st-h">Status</h2>
+        <p id="state" class="ytm-state">Checking…</p>
+        <p id="via" class="ytm-small"></p>
+        <button type="button" class="ytm-btn ytm-go" id="test">Test playback</button>
+      </section>
+
+      <section class="ytm-card" aria-labelledby="relay-h">
+        <h2 class="wz-sec-h" id="relay-h">Home relay <small>for cloud Wizards</small></h2>
+        <p id="relay-on" class="ytm-small" hidden>On. YouTube goes through your home computer. <button type="button" class="ytm-link" id="relay-off">Remove</button></p>
+        <form id="relay-form" class="ytm-col" autocomplete="off">
+          <p class="ytm-small">On an always-on computer at home that’s on your Tailscale, run:</p>
+          <code class="ytm-code">curl -fsSL https://raw.githubusercontent.com/humanitylabs-org/wizard-home-relay/main/install.sh | sh</code>
+          <p class="ytm-small">Then paste the address it prints.</p>
+          <input id="relay" class="wz-input" type="password" placeholder="socks5h://wizard:…@100.x.x.x:18765" aria-label="Home relay address">
+          <button type="submit" class="ytm-btn" id="save">Save and test</button>
+        </form>
+      </section>
+
+      <p class="ytm-small ytm-foot">Music finds this connector automatically. Search, radio and songs from YouTube show up there.</p>
+    </main>
+    <p id="status" class="wz-status" role="status" aria-live="polite"></p>
+  </div>
+</body>
+</html>

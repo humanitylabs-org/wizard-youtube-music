@@ -1,0 +1,22 @@
+name: app-image
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+permissions:
+  contents: read
+  packages: write
+jobs:
+  image:
+    uses: humanitylabs-org/wizard-app-index/.github/workflows/app-image.yml@feature/packaging-rule-14
+    with:
+      context: .
+      dockerfile: Dockerfile
+      image: ghcr.io/humanitylabs-org/wizard-youtube-music
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - run: pip install -r requirements.txt pytest && python -m pytest -q tests

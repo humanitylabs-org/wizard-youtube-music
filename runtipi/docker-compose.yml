@@ -1,0 +1,23 @@
+services:
+  wizard-youtube-music:
+    image: ghcr.io/humanitylabs-org/wizard-youtube-music:0.1.0
+    restart: unless-stopped
+    user: 1000:1000
+    cap_drop: [ALL]
+    security_opt: ['no-new-privileges:true']
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 512m
+    environment:
+      PORT: '9206'
+      DATA_DIR: /data
+      WIZARD_TRUSTED_ORIGINS: ${WIZARD_TRUSTED_ORIGINS:-}
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    ports: ['127.0.0.1:${APP_PORT:-9206}:9206']
+    x-runtipi:
+      is_main: true
+      internal_port: 9206
+x-runtipi:
+  schema_version: 2
+  overrides: []
