@@ -2,6 +2,7 @@ name: app-image
 on:
   push:
     branches: [main]
+    paths-ignore: [wizard.md, runtipi/docker-compose.yml, README.md]
   workflow_dispatch: {}
 permissions:
   contents: read
