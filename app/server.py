@@ -241,12 +241,15 @@ _account = {"state": "signed_out", "checked_at": 0}
 
 
 def _private_json(path, value):
-    tmp = path.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    os.fchmod(fd, 0o600)
-    with os.fdopen(fd, "w") as out:
-        json.dump(value, out)
-    tmp.replace(path)
+    fd, name = tempfile.mkstemp(prefix=".oauth-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(value, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
 
 
 def _oauth_credentials():
