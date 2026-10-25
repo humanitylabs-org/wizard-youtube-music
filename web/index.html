@@ -45,8 +45,8 @@
     <ol>
       <li>Choose an always-on home computer. Ask your agent for the instructions matching Mac, Windows or Linux; do not run a Linux installer on Windows.</li>
       <li>Connect the computer and Wizard to your own private Tailscale network. Keep the authenticated relay private; never open its port publicly.</li>
-      <li>Install Wizard Home Relay using its reviewed platform instructions, then enter its private address below. Do not paste the address into chat: it contains a password.</li>
-      <li>Save and test. A working relay is not proof that your YouTube account is connected, and account consent does not fix a blocked network.</li>
+      <li>Install Wizard Home Relay using its reviewed platform instructions and export a new private pairing JSON file. Import it only here on your private authenticated HTTPS Wizard. Never attach it to chat: it contains a reusable secret.</li>
+      <li>Confirm the file belongs to your home Tailscale device. Import, test relay connectivity, then test playback separately. Account connection is another independent check.</li>
     </ol>
     <button type="button" class="ytm-btn" id="ask-help">Help me set this up</button>
     <div id="help-step" hidden>
@@ -55,12 +55,19 @@
       <button type="button" class="ytm-btn" id="copy-help">Copy request</button>
       <button type="button" class="ytm-btn" id="open-agents">Open Agents</button>
     </div>
-    <p id="relay-on" class="ytm-small" hidden>On. YouTube goes through your home computer. <button type="button" class="ytm-link" id="relay-off">Remove</button></p>
+    <p id="relay-state" class="ytm-small" role="status">Checking relay…</p>
+    <p id="relay-setup" class="ytm-small">Private import is disabled until the owner configures the HTTPS origin and a private import authorization key (see README). No file can be imported yet.</p>
+    <label for="relay-key">Private import authorization key (never in chat)</label>
+    <input id="relay-key" class="wz-input" type="password" autocomplete="off">
+    <p id="relay-on" class="ytm-small" hidden>Relay settings saved; see connectivity status above. <button type="button" class="ytm-link" id="relay-off">Remove locally</button></p>
+    <button type="button" class="ytm-btn" id="relay-test">Test relay connectivity</button>
     <form id="relay-form" class="ytm-col" autocomplete="off">
-      <label for="relay">Private home relay address</label>
-      <input id="relay" class="wz-input" type="password" placeholder="socks5h://wizard:…@100.x.x.x:18765">
-      <button type="submit" class="ytm-btn" id="save">Save and test</button>
+      <label for="relay-file">Private home relay pairing file</label>
+      <input id="relay-file" class="wz-input" type="file" accept=".json,application/json">
+      <label><input id="relay-confirm" type="checkbox" required> I confirmed this file belongs to my home Tailscale device and scoped its tailnet access to this Wizard.</label>
+      <button type="submit" class="ytm-btn" id="save">Import privately (not a connectivity test)</button>
     </form>
+    <p class="ytm-small">After verified import, delete the export using your file manager. Local removal here does not rotate the home token: revoke or rotate it on the home computer. No remote install or reply notification is performed by these controls.</p>
   </section>
   <p class="ytm-small ytm-foot">Music discovers this connector for search, radio and playback. Availability depends on YouTube, your network and your account entitlements.</p>
 </main>

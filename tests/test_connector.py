@@ -38,7 +38,7 @@ def test_blocked_is_reported_not_ok(ytm, monkeypatch):
 def test_relay_is_private_routes_downloads_and_resets_test(ytm, monkeypatch, tmp_path):
     with pytest.raises(ValueError):
         ytm.set_relay('http://evil:80')
-    addr = 'socks5h://wizard:abcdefgh12345678@100.64.1.2:18765'
+    addr = 'socks5h://wizard:abcdefgh12345678abcdefgh12345678@100.64.1.2:18765'
     s = ytm.set_relay(addr)
     assert s['relay'] is True and s['playback']['state'] == 'untested'
     assert 'abcdefgh' not in json.dumps(s)

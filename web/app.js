@@ -1,8 +1,10 @@
 'use strict';
 const el = (id) => document.getElementById(id);
 const say = (t, kind = 'error') => { const s = el('status'); s.className = 'wz-status' + (kind === 'note' ? ' note' : ''); s.textContent = t; };
-async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+async function api(path, body, authorization) {
+  const headers = { 'Content-Type': 'application/json' };
+  if (authorization) headers.Authorization = 'Bearer ' + authorization;
+  const r = await fetch(path, body === undefined ? {} : { method: 'POST', headers, body: JSON.stringify(body) });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Something went wrong. Try again.');
   return j;
@@ -20,18 +22,45 @@ function render(s) {
   if (!a.configured && a.state === 'signed_out') el('via').textContent += ' Owner must provision oauth-client.json privately first (see README).';
   el('relay-on').hidden = !s.relay;
   el('relay-form').hidden = s.relay;
+  const relay = s.relay_status || {};
+  el('relay-state').textContent = relay.message || 'Relay status unknown.';
+  el('save').disabled = !relay.import_enabled;
+  el('relay-test').disabled = !s.relay || !relay.import_enabled;
+  el('relay-off').disabled = !relay.import_enabled;
+  el('relay-setup').hidden = !!relay.import_enabled;
 }
 async function run(fn, busy) {
   const b = el(busy); b.disabled = true; say('');
-  try { render(await fn()); } catch (e) { say(e.message); } finally { b.disabled = false; }
+  let next;
+  try { next = await fn(); } catch (e) { say(e.message); } finally { b.disabled = false; }
+  if (next) render(next); // render authoritative disabled states after clearing busy
 }
 el('test').onclick = () => { el('state').textContent = 'Testing… this downloads one song.'; run(() => api('api/test', {}), 'test'); };
-el('relay-form').onsubmit = (e) => {
+async function relayAction(path, body) {
+  try {
+    if (!window.isSecureContext || location.protocol !== 'https:') throw new Error('Use your private authenticated Wizard HTTPS page for relay operations.');
+    const key = el('relay-key').value;
+    if (!key) throw new Error('Enter your privately provisioned import authorization key. Never send it in chat.');
+    return await api(path, body, key);
+  }
+  finally { el('relay-key').value = ''; }
+}
+el('relay-form').onsubmit = async (e) => {
   e.preventDefault();
-  const v = el('relay').value.trim(); if (!v) return;
-  run(async () => { await api('api/relay', { relay: v }); el('relay').value = ''; el('state').textContent = 'Testing…'; return api('api/test', {}); }, 'save');
+  await run(async () => {
+    const file = el('relay-file').files[0];
+    try {
+      if (!file || file.size > 16384) throw new Error('Choose a private pairing JSON file no larger than 16 KiB.');
+      if (!el('relay-confirm').checked) throw new Error('Confirm the home Tailscale device first.');
+      let pairing;
+      try { pairing = JSON.parse(await file.text()); }
+      catch { throw new Error('Invalid pairing JSON file. Export a new file from your home relay.'); }
+      return await relayAction('api/relay/import', {pairing, confirm_home_device: true});
+    } finally { el('relay-file').value = ''; el('relay-confirm').checked = false; el('relay-key').value = ''; }
+  }, 'save');
 };
-el('relay-off').onclick = () => run(() => api('api/relay', { relay: '' }), 'relay-off');
+el('relay-off').onclick = () => run(() => relayAction('api/relay', { relay: '' }), 'relay-off');
+el('relay-test').onclick = () => run(() => relayAction('api/relay/test', {}), 'relay-test');
 el('connect').onclick = async () => {
   el('connect').disabled = true; say('');
   try {

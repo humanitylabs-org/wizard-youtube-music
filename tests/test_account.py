@@ -69,7 +69,7 @@ def test_missing_owner_client_is_not_signin(server):
 
 
 def test_device_flow_real_library_transport_and_private_storage(server, flow, monkeypatch):
-    relay = 'socks5h://wizard:fixturepassword@100.64.1.2:18765'
+    relay = 'socks5h://wizard:fixturepassword_fixturepassword_@100.64.1.2:18765'
     server.set_relay(relay)
     start = server.account_start()
     assert start['user_code'] == 'OWNER-CODE' and 'device_code' not in start
