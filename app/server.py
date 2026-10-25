@@ -5,8 +5,8 @@ Music (the player) asks this app for search results, radio, related artists and 
 Everything YouTube lives here: the catalog client, the downloader, an optional owner
 account, and an optional home relay for Wizards on data-center servers.
 
-YouTube blocks most data-center addresses, so audio only works when this Wizard runs on a
-home internet connection, or when it routes through Wizard Home Relay on a computer at home.
+YouTube may block data-center addresses. A home connection or Wizard Home Relay can
+help but does not guarantee playback, account safety or any account entitlements.
 The setup screen says so and proves playback with a real test download.
 """
 from __future__ import annotations
@@ -94,7 +94,9 @@ def _record(state: str, detail: str = "") -> None:
 
 def status() -> dict:
     d = _load()
-    p = d.get("playback") or {"state": "untested", "at": 0}
+    stored = d.get("playback") or {"state": "untested", "at": 0}
+    # Older versions stored downloader stderr, which may contain relay credentials.
+    p = {"state": stored.get("state", "untested"), "at": stored.get("at", 0)}
     via = "home relay" if relay() else "this Wizard's own internet"
     message = {
         "ok": f"Working. Songs play through {via}.",
@@ -105,15 +107,157 @@ def status() -> dict:
     }.get(p.get("state"), "")
     return {"app": APP_ID, "version": VERSION, "contract": CONTRACT, "provider": "youtube-music",
             "name": "YouTube Music", "ready": p.get("state") == "ok", "playback": {**p, "via": via, "message": message},
-            "relay": bool(relay()), "account": AUTH.exists(),
-            "requirement": "Needs a home internet connection: a Wizard at home, or a cloud Wizard with a home relay."}
+            "relay": bool(relay()), "account": account_status()["state"] == "connected",
+            "account_status": account_status(),
+            "capabilities": {"library": ["playlists", "likes", "playlist"], "library_path": "/api/music/library/"},
+            "requirement": "Use home internet directly, or an always-on home relay for a cloud Wizard. Neither guarantees playback."}
+
+# ---------------------------------------------------------------- owner account (documented ytmusicapi device OAuth)
+
+OAUTH = DATA / "ytmusic-oauth.json"
+OAUTH_CLIENT = DATA / "oauth-client.json"
+_pending = None  # device code stays in memory only; restarting cancels setup
+_account = {"state": "signed_out", "checked_at": 0}
+
+
+def _private_json(path, value):
+    tmp = path.with_suffix(".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "w") as out:
+        json.dump(value, out)
+    tmp.replace(path)
+
+
+def _oauth_credentials():
+    from ytmusicapi import OAuthCredentials
+    try:
+        c = json.loads(OAUTH_CLIENT.read_text())
+        return OAuthCredentials(client_id=c["client_id"], client_secret=c["client_secret"], session=_session())
+    except Exception:
+        raise ValueError("Owner setup needed: provision oauth-client.json privately; see README.") from None
+
+
+def account_status():
+    state = dict(_account)
+    if not (OAUTH.exists() or AUTH.exists()):
+        state = {"state": "signed_out", "checked_at": 0}
+    if state["state"] == "signed_out" and (OAUTH.exists() or AUTH.exists()):
+        state["state"] = "unverified"
+    return {**state, "configured": OAUTH_CLIENT.exists(), "method": "device_oauth",
+            "legacy_browser_credentials": AUTH.exists()}
+
+
+def account_start():
+    global _pending
+    with _lock:
+        if OAUTH.exists() or AUTH.exists():
+            raise ValueError("Disconnect the existing account before connecting another.")
+        try:
+            code = _oauth_credentials().get_code()
+            # Never accept a provider-supplied arbitrary URL in the owner UI.
+            url = code.get("verification_url") or code.get("verification_uri")
+            if url not in ("https://www.google.com/device", "https://google.com/device", "https://www.youtube.com/activate"):
+                raise ValueError("unexpected verification URL")
+            _pending = {"device_code": code["device_code"], "expires": time.time() + min(int(code["expires_in"]), 1800),
+                        "interval": max(5, int(code.get("interval", 5))), "next": 0}
+            return {"verification_url": url, "user_code": code["user_code"], "expires_in": min(int(code["expires_in"]), 1800)}
+        except Exception:
+            _pending = None
+            raise ValueError("Could not start Google authorization. Check owner OAuth client configuration.") from None
+
+
+def account_check():
+    global _account
+    with _lock:
+        if not (OAUTH.exists() or AUTH.exists()):
+            _account = {"state": "signed_out", "checked_at": 0}
+        else:
+            try:
+                # A file alone is NOT evidence of an authenticated account.
+                ytm().get_library_playlists(limit=1)
+                _account = {"state": "connected", "checked_at": time.time()}
+            except Exception:
+                _clients.clear()
+                _account = {"state": "needs_attention", "checked_at": time.time()}
+        return status()
+
+
+def account_poll():
+    global _pending
+    with _lock:
+        if not _pending or time.time() >= _pending["expires"]:
+            _pending = None
+            return {"state": "expired"}
+        if time.time() < _pending["next"]:
+            return {"state": "pending", "retry_after": _pending["interval"]}
+        _pending["next"] = time.time() + _pending["interval"]
+        try:
+            token = _oauth_credentials().token_from_code(_pending["device_code"])
+        except Exception:
+            raise ValueError("Google authorization unavailable. Try again later.") from None
+        error = token.get("error")
+        if error in ("authorization_pending", "slow_down"):
+            if error == "slow_down":
+                _pending["interval"] += 5
+                _pending["next"] = time.time() + _pending["interval"]
+            return {"state": "pending", "retry_after": _pending["interval"]}
+        if error or not all(token.get(k) for k in ("access_token", "refresh_token", "token_type", "scope", "expires_in")):
+            _pending = None
+            return {"state": "denied"}
+        token = {k: token[k] for k in ("access_token", "refresh_token", "token_type", "scope", "expires_in")}
+        token["expires_at"] = int(time.time()) + int(token["expires_in"])
+        _private_json(OAUTH, token)
+        _pending = None
+        _clients.clear()
+        return {"state": "complete", "status": account_check()}
+
+
+def account_disconnect():
+    global _pending, _account
+    with _lock:
+        _pending = None
+        OAUTH.unlink(missing_ok=True)
+        AUTH.unlink(missing_ok=True)
+        _clients.clear()
+        _account = {"state": "signed_out", "checked_at": 0}
+        return status()
+
+
+def library(kind, playlist="", limit=40):
+    if account_status()["state"] != "connected":
+        account_check()
+    if account_status()["state"] != "connected":
+        raise ValueError("Connect and verify your YouTube account first.")
+    limit = max(1, min(limit, 100))
+    if kind not in ("playlists", "likes", "playlist"):
+        raise ValueError("Unknown library kind")
+    if kind == "playlist" and not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", playlist):
+        raise ValueError("Invalid playlist id")
+    try:
+        client = ytm()
+        if kind == "playlists":
+            return {"playlists": [{k: p[k] for k in ("playlistId", "title", "thumbnails", "count") if k in p}
+                                  for p in client.get_library_playlists(limit=limit)[:limit]]}
+        if kind == "likes":
+            raw = client.get_liked_songs(limit=limit)
+        else:
+            raw = client.get_playlist(playlist, limit=limit)
+        return {"tracks": [i for i in (_item(r) for r in raw.get("tracks", [])[:limit]) if i]}
+    except Exception:
+        _account.update(state="needs_attention", checked_at=time.time())
+        raise RuntimeError("Account library unavailable; verify your connection.") from None
 
 # ---------------------------------------------------------------- YouTube catalog
 
 
 def _session():
     import requests
-    s = requests.Session()
+    class BoundedSession(requests.Session):
+        def request(self, *args, **kwargs):
+            kwargs.setdefault("timeout", 20)
+            return super().request(*args, **kwargs)
+    s = BoundedSession()
     if relay():
         s.proxies.update({"http": relay(), "https": relay()})
     return s
@@ -127,7 +271,11 @@ def ytm(radio: bool = False):
             kw = {"requests_session": _session()}
             if radio and RADIO_LOCATION:
                 kw["location"] = RADIO_LOCATION
-            _clients[key] = YTMusic(str(AUTH), **kw) if AUTH.exists() else YTMusic(**kw)
+            if OAUTH.exists():
+                kw["oauth_credentials"] = _oauth_credentials()
+                _clients[key] = YTMusic(str(OAUTH), **kw)
+            else:
+                _clients[key] = YTMusic(str(AUTH), **kw) if AUTH.exists() else YTMusic(**kw)
         return _clients[key]
 
 
@@ -225,7 +373,7 @@ def audio(vid: str) -> Path:
             for m in made:
                 m.unlink(missing_ok=True)
             low = (proc.stderr or "").lower()
-            _record("blocked" if any(m in low for m in BLOCK_MARKERS) else "failed", proc.stderr or "")
+            _record("blocked" if any(m in low for m in BLOCK_MARKERS) else "failed", "YouTube refused the download" if any(m in low for m in BLOCK_MARKERS) else "Download failed")
             raise RuntimeError("blocked" if any(m in low for m in BLOCK_MARKERS) else "download failed")
         final = CACHE / f"{vid}{made[0].suffix}"
         made[0].replace(final)
@@ -274,7 +422,7 @@ def rpc(msg: dict):
                 return {"jsonrpc": "2.0", "id": i, "error": {"code": -32602, "message": "Unknown tool."}}
             r = {"content": [{"type": "text", "text": json.dumps(v)}], "structuredContent": v, "isError": False}
         except Exception as e:  # noqa: BLE001
-            r = {"content": [{"type": "text", "text": str(e)[:300]}], "isError": True}
+            r = {"content": [{"type": "text", "text": "YouTube Music request failed; check connection status."}], "isError": True}
     else:
         return {"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": "Unknown method."}}
     return {"jsonrpc": "2.0", "id": i, "result": r}
@@ -326,6 +474,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True, "app": APP_ID, "version": VERSION})
             if path == "/api/status":
                 return self.send(200, status())
+            if path in ("/api/music/library/playlists", "/api/music/library/likes", "/api/music/library/playlist"):
+                return self.send(200, library(path.rsplit("/", 1)[1], q("id"), int(q("limit", "40"))))
             if path == "/api/music/search":
                 return self.send(200, {"tracks": search(q("q"), q("kind", "songs"), min(int(q("limit", "20")), 40))})
             if path == "/api/music/radio":
@@ -350,7 +500,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
-            print("GET failed", path, repr(e)[:300], file=sys.stderr)
+            print("GET failed", path, type(e).__name__, file=sys.stderr)
             return self.send(502, {"error": "blocked" if "blocked" in str(e) else "source_unavailable", "status": status()["playback"]})
 
     def do_HEAD(self):
@@ -365,6 +515,8 @@ class Handler(BaseHTTPRequestHandler):
             if n > 65536:
                 return self.send(413, {"error": "too large"})
             body = json.loads(self.rfile.read(n) or b"{}")
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
             if path == "/mcp":
                 out = rpc(body if isinstance(body, dict) else {})
                 return self.send(202 if out is None else 200, out)
@@ -374,9 +526,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, set_relay(str(body.get("relay", ""))))
             if path == "/api/test":
                 return self.send(200, test_playback())
+            if path == "/api/account/start":
+                return self.send(200, account_start())
+            if path == "/api/account/poll":
+                return self.send(200, account_poll())
+            if path == "/api/account/check":
+                return self.send(200, account_check())
+            if path == "/api/account/disconnect":
+                return self.send(200, account_disconnect())
             return self.send(404, {"error": "not_found"})
         except ValueError as e:
             return self.send(400, {"error": str(e)})
+        except Exception:
+            return self.send(502, {"error": "Request unavailable. Check connection status."})
 
     def stream(self, p: Path):
         size = p.stat().st_size

@@ -5,7 +5,7 @@ name: YouTube Music
 type: service
 category: system
 version: 0.1.0
-summary: Plays YouTube Music in your Music app. Needs a home internet connection; cloud Wizards need a home relay.
+summary: YouTube catalog, optional account library and playback for Music; cloud Wizards may need an always-on home relay.
 tags: [audio]
 license: MIT
 source: https://github.com/humanitylabs-org/wizard-youtube-music
@@ -28,13 +28,15 @@ view:
 health: /healthz
 provides: [music-source, youtube-music]
 uses: []
-needs: [home-network]
+needs: []
 ---
 
 # YouTube Music
 
 A music source for Wizard's Music app, like SimpleFIN is a bank source for Money. Music finds it automatically and shows YouTube search, radio and songs.
 
-**Needs a home internet connection.** YouTube blocks cloud servers in data centers. It works on a Wizard at home. On a cloud Wizard (VPS), add a home relay: run Wizard Home Relay on an always-on computer at home that's on your Tailscale and paste its address into this app. The setup screen runs a real test download before it says it's working.
+Try playback directly on a home Wizard. YouTube may block cloud/VPS networks; an always-on home computer on your private Tailscale can provide a relay. The setup screen provides guided help and tests a real download before reporting playback success. Neither home internet nor account sign-in guarantees playback, ad-free/unlimited use, Premium features or lower account risk.
+
+Optional own-account device OAuth is documented in README.md. It requires an owner-provisioned Google Cloud TV/device client and consent on Google. Account status is separate from playback; a credential file is unverified until an authenticated library call succeeds. The additive `/api/music/library/playlists`, `/likes` and `/playlist?id=` endpoints use the existing sanitized track shape; Music clients must add library consumption UI. No passwords or cookies should be sent through chat. No automatic setup message or notification delivery is claimed.
 
 Contract `wizard.music-source/1`: `GET /api/status`, `/api/music/search?q=`, `/api/music/radio?seed=`, `/api/music/related-artists?name=`, `/api/music/genre?genre=`, `/api/music/audio/<videoId>` (Range supported). Errors return 502 with `error: blocked` when YouTube refuses this network.

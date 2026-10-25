@@ -16,3 +16,6 @@
 .ytm-btn:disabled { opacity: .5; }
 .ytm-link { text-decoration: underline; color: inherit; padding: 0 4px; }
 .ytm-foot { margin: 4px 6px 0; }
+.ytm-card ol { padding-inline-start: 22px; line-height: 1.5; }
+#help-request { width: 100%; min-height: 150px; resize: vertical; }
+#auth-step a { color: var(--accent); text-decoration: underline; }
