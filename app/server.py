@@ -5,13 +5,16 @@ Music (the player) asks this app for search results, radio, related artists and 
 Everything YouTube lives here: the catalog client, the downloader, an optional owner
 account, and an optional home relay for Wizards on data-center servers.
 
-YouTube blocks most data-center addresses, so audio only works when this Wizard runs on a
-home internet connection, or when it routes through Wizard Home Relay on a computer at home.
+YouTube may block data-center addresses. A home connection or Wizard Home Relay can
+help but does not guarantee playback, account safety or any account entitlements.
 The setup screen says so and proves playback with a real test download.
 """
 from __future__ import annotations
 
 import json
+import ipaddress
+import secrets
+import tempfile
 import os
 import re
 import subprocess
@@ -35,12 +38,12 @@ CACHE_MAX_BYTES = int(os.environ.get("CACHE_MAX_BYTES", str(3 * 1024**3)))
 RADIO_LOCATION = os.environ.get("RADIO_LOCATION", "US")
 PROBE_VIDEO = os.environ.get("PROBE_VIDEO", "sWcLccMuCA8")  # a short, widely available track
 YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
-RELAY_RE = re.compile(r"^socks5h://[A-Za-z0-9._~-]{1,64}:[A-Za-z0-9._~-]{8,200}@[A-Za-z0-9.-]{1,253}:[0-9]{2,5}$")
+
 BLOCK_MARKERS = ("confirm you\u2019re not a bot", "confirm you're not a bot", "sign in to confirm", "http error 429", "http error 403")
 STATIC = {".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
           ".png": "image/png", ".svg": "image/svg+xml"}
 
-DATA.mkdir(parents=True, exist_ok=True)
+DATA.mkdir(parents=True, exist_ok=True, mode=0o700)
 CACHE.mkdir(parents=True, exist_ok=True)
 _lock = threading.RLock()
 _dl_locks: dict[str, threading.Lock] = {}
@@ -58,27 +61,144 @@ def _load() -> dict:
 
 
 def _save(d: dict) -> None:
-    tmp = SETTINGS.with_suffix(".tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as out:
-        json.dump(d, out)
-    tmp.replace(SETTINGS)
+    # Unique O_EXCL temporary file: no predictable-file/symlink truncation.
+    fd, name = tempfile.mkstemp(prefix=".settings-", dir=DATA)
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(d, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, SETTINGS)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def pairing_url(obj):
+    """Validate before building a URL. Export domain hints never grant access."""
+    error = "Invalid private pairing file. Export a new file from Wizard Home Relay."
+    if not isinstance(obj, dict):
+        raise ValueError(error)
+    if any(obj.get(k) != v for k, v in {
+        "schema": "wizard-home-relay-pairing-v1", "scheme": "socks5h",
+        "username": "wizard", "provider": "youtube"}.items()):
+        raise ValueError(error)
+    host, port, password = obj.get("host"), obj.get("port"), obj.get("password")
+    try:
+        addr = ipaddress.IPv4Address(host) if isinstance(host, str) else None
+    except ipaddress.AddressValueError:
+        addr = None
+    if (addr is None or addr not in ipaddress.IPv4Network("100.64.0.0/10")
+            or type(port) is not int or not 1 <= port <= 65535
+            or not isinstance(password, str) or not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", password)):
+        raise ValueError(error)
+    return f"socks5h://wizard:{urllib.parse.quote(password, safe='')}@{addr}:{port}"
+
+
+def valid_relay(value):
+    try:
+        u = urllib.parse.urlsplit(value)
+        return value == pairing_url({"schema": "wizard-home-relay-pairing-v1", "provider": "youtube",
+            "scheme": u.scheme, "host": u.hostname, "port": u.port, "username": u.username, "password": u.password})
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def import_pairing(body):
+    if body.get("confirm_home_device") is not True:
+        raise ValueError("Confirm this file belongs to your home Tailscale device first.")
+    value = pairing_url(body.get("pairing"))
+    return set_relay(value)
+
+
+def test_relay():
+    # Serialize probe/replacement so an obsolete result cannot verify a new import.
+    with _lock:
+        value = relay()
+        if not value:
+            raise ValueError("Import your home relay file first.")
+        state = "failed"
+        try:
+            code = _relay_probe(value)
+            if code == 200:
+                state = "verified"
+            elif code in (403, 429):
+                state = "provider_blocked"
+        except Exception:
+            pass  # diagnostics can contain credentials
+        d = _load()
+        d["relay_check"] = {"state": state, "at": time.time()}
+        _save(d)
+        return status()
+
+
+def _relay_probe(value):
+    """Required SOCKS auth, remote DNS, verified TLS, total deadline and byte caps."""
+    import socket
+    import ssl
+    u = urllib.parse.urlsplit(value)
+    deadline = time.monotonic() + 15
+    def remaining():
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError()
+        return seconds
+    def read(sock, size):
+        data = b""
+        while len(data) < size:
+            sock.settimeout(remaining())
+            chunk = sock.recv(size - len(data))
+            if not chunk:
+                raise OSError("relay closed")
+            data += chunk
+        return data
+    def write(sock, data):
+        sock.settimeout(remaining())
+        sock.sendall(data)
+    with socket.create_connection((u.hostname, u.port), timeout=remaining()) as sock:
+        # Offer ONLY password auth; a no-auth service cannot pass pairing.
+        write(sock, b"\x05\x01\x02")
+        if read(sock, 2) != b"\x05\x02":
+            raise OSError("relay authentication required")
+        password = u.password.encode("ascii")
+        write(sock, b"\x01\x06wizard" + bytes([len(password)]) + password)
+        if read(sock, 2) != b"\x01\x00":
+            raise OSError("relay authentication refused")
+        domain = b"music.youtube.com"
+        write(sock, b"\x05\x01\x00\x03" + bytes([len(domain)]) + domain + b"\x01\xbb")
+        header = read(sock, 4)
+        if header[:3] != b"\x05\x00\x00" or header[3] not in (1, 3, 4):
+            raise OSError("relay connection refused")
+        size = {1: 4, 4: 16}.get(header[3])
+        if size is None:
+            size = read(sock, 1)[0]
+        read(sock, size + 2)
+        sock.settimeout(remaining())
+        with ssl.create_default_context().wrap_socket(sock, server_hostname="music.youtube.com") as tls:
+            write(tls, b"HEAD / HTTP/1.1\r\nHost: music.youtube.com\r\nConnection: close\r\n\r\n")
+            line = b""
+            while len(line) < 256 and not line.endswith(b"\r\n"):
+                line += read(tls, 1)
+            match = re.fullmatch(rb"HTTP/1\.[01] ([0-9]{3}) [^\r\n]*\r\n", line)
+            if not match:
+                raise OSError("invalid provider response")
+            return int(match[1])
 
 
 def relay() -> str:
     r = _load().get("relay") or ""
-    return r if isinstance(r, str) and RELAY_RE.match(r) else ""
+    return r if isinstance(r, str) and valid_relay(r) else ""
 
 
 def set_relay(value: str) -> dict:
-    if not isinstance(value, str) or (value.strip() and not RELAY_RE.match(value.strip())):
-        raise ValueError("A home relay address looks like socks5h://wizard:\u2026@100.x.x.x:18765")
+    if not isinstance(value, str) or (value and not valid_relay(value)):
+        raise ValueError("Invalid home relay. Use a private pairing file with a Tailscale IPv4 address.")
     with _lock:
         d = _load()
         if value.strip():
             d["relay"] = value.strip()
         else:
             d.pop("relay", None)
+        d["relay_check"] = {"state": "imported_unverified" if value else "not_configured", "at": 0}
         d["playback"] = {"state": "untested", "at": 0}
         _save(d)
         _clients.clear()
@@ -94,7 +214,9 @@ def _record(state: str, detail: str = "") -> None:
 
 def status() -> dict:
     d = _load()
-    p = d.get("playback") or {"state": "untested", "at": 0}
+    stored = d.get("playback") or {"state": "untested", "at": 0}
+    # Older versions stored downloader stderr, which may contain relay credentials.
+    p = {"state": stored.get("state", "untested"), "at": stored.get("at", 0)}
     via = "home relay" if relay() else "this Wizard's own internet"
     message = {
         "ok": f"Working. Songs play through {via}.",
@@ -105,16 +227,162 @@ def status() -> dict:
     }.get(p.get("state"), "")
     return {"app": APP_ID, "version": VERSION, "contract": CONTRACT, "provider": "youtube-music",
             "name": "YouTube Music", "ready": p.get("state") == "ok", "playback": {**p, "via": via, "message": message},
-            "relay": bool(relay()), "account": AUTH.exists(),
-            "requirement": "Needs a home internet connection: a Wizard at home, or a cloud Wizard with a home relay."}
+            "relay": bool(relay()), "relay_status": relay_status(d), "account": account_status()["state"] == "connected",
+            "account_status": account_status(),
+            "capabilities": {"library": ["playlists", "likes", "playlist"], "library_path": "/api/music/library/"},
+            "requirement": "Use home internet directly, or an always-on home relay for a cloud Wizard. Neither guarantees playback."}
+
+# ---------------------------------------------------------------- owner account (documented ytmusicapi device OAuth)
+
+OAUTH = DATA / "ytmusic-oauth.json"
+OAUTH_CLIENT = DATA / "oauth-client.json"
+_pending = None  # device code stays in memory only; restarting cancels setup
+_account = {"state": "signed_out", "checked_at": 0}
+
+
+def _private_json(path, value):
+    fd, name = tempfile.mkstemp(prefix=".oauth-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as out:
+            json.dump(value, out)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, path)
+    finally:
+        Path(name).unlink(missing_ok=True)
+
+
+def _oauth_credentials():
+    from ytmusicapi import OAuthCredentials
+    try:
+        c = json.loads(OAUTH_CLIENT.read_text())
+        return OAuthCredentials(client_id=c["client_id"], client_secret=c["client_secret"], session=_session())
+    except Exception:
+        raise ValueError("Owner setup needed: provision oauth-client.json privately; see README.") from None
+
+
+def account_status():
+    state = dict(_account)
+    if not (OAUTH.exists() or AUTH.exists()):
+        state = {"state": "signed_out", "checked_at": 0}
+    if state["state"] == "signed_out" and (OAUTH.exists() or AUTH.exists()):
+        state["state"] = "unverified"
+    return {**state, "configured": OAUTH_CLIENT.exists(), "method": "device_oauth",
+            "legacy_browser_credentials": AUTH.exists()}
+
+
+def account_start():
+    global _pending
+    with _lock:
+        if OAUTH.exists() or AUTH.exists():
+            raise ValueError("Disconnect the existing account before connecting another.")
+        try:
+            code = _oauth_credentials().get_code()
+            # Never accept a provider-supplied arbitrary URL in the owner UI.
+            url = code.get("verification_url") or code.get("verification_uri")
+            if url not in ("https://www.google.com/device", "https://google.com/device", "https://www.youtube.com/activate"):
+                raise ValueError("unexpected verification URL")
+            _pending = {"device_code": code["device_code"], "expires": time.time() + min(int(code["expires_in"]), 1800),
+                        "interval": max(5, int(code.get("interval", 5))), "next": 0}
+            return {"verification_url": url, "user_code": code["user_code"], "expires_in": min(int(code["expires_in"]), 1800)}
+        except Exception:
+            _pending = None
+            raise ValueError("Could not start Google authorization. Check owner OAuth client configuration.") from None
+
+
+def account_check():
+    global _account
+    with _lock:
+        if not (OAUTH.exists() or AUTH.exists()):
+            _account = {"state": "signed_out", "checked_at": 0}
+        else:
+            try:
+                # A file alone is NOT evidence of an authenticated account.
+                ytm().get_library_playlists(limit=1)
+                _account = {"state": "connected", "checked_at": time.time()}
+            except Exception:
+                _clients.clear()
+                _account = {"state": "needs_attention", "checked_at": time.time()}
+        return status()
+
+
+def account_poll():
+    global _pending
+    with _lock:
+        if not _pending or time.time() >= _pending["expires"]:
+            _pending = None
+            return {"state": "expired"}
+        if time.time() < _pending["next"]:
+            return {"state": "pending", "retry_after": _pending["interval"]}
+        _pending["next"] = time.time() + _pending["interval"]
+        try:
+            token = _oauth_credentials().token_from_code(_pending["device_code"])
+        except Exception:
+            raise ValueError("Google authorization unavailable. Try again later.") from None
+        error = token.get("error")
+        if error in ("authorization_pending", "slow_down"):
+            if error == "slow_down":
+                _pending["interval"] += 5
+                _pending["next"] = time.time() + _pending["interval"]
+            return {"state": "pending", "retry_after": _pending["interval"]}
+        if error or not all(token.get(k) for k in ("access_token", "refresh_token", "token_type", "scope", "expires_in")):
+            _pending = None
+            return {"state": "denied"}
+        token = {k: token[k] for k in ("access_token", "refresh_token", "token_type", "scope", "expires_in")}
+        token["expires_at"] = int(time.time()) + int(token["expires_in"])
+        _private_json(OAUTH, token)
+        _pending = None
+        _clients.clear()
+        return {"state": "complete", "status": account_check()}
+
+
+def account_disconnect():
+    global _pending, _account
+    with _lock:
+        _pending = None
+        OAUTH.unlink(missing_ok=True)
+        AUTH.unlink(missing_ok=True)
+        _clients.clear()
+        _account = {"state": "signed_out", "checked_at": 0}
+        return status()
+
+
+def library(kind, playlist="", limit=40):
+    if account_status()["state"] != "connected":
+        account_check()
+    if account_status()["state"] != "connected":
+        raise ValueError("Connect and verify your YouTube account first.")
+    limit = max(1, min(limit, 100))
+    if kind not in ("playlists", "likes", "playlist"):
+        raise ValueError("Unknown library kind")
+    if kind == "playlist" and not re.fullmatch(r"[A-Za-z0-9_-]{1,160}", playlist):
+        raise ValueError("Invalid playlist id")
+    try:
+        client = ytm()
+        if kind == "playlists":
+            return {"playlists": [{k: p[k] for k in ("playlistId", "title", "thumbnails", "count") if k in p}
+                                  for p in client.get_library_playlists(limit=limit)[:limit]]}
+        if kind == "likes":
+            raw = client.get_liked_songs(limit=limit)
+        else:
+            raw = client.get_playlist(playlist, limit=limit)
+        return {"tracks": [i for i in (_item(r) for r in raw.get("tracks", [])[:limit]) if i]}
+    except Exception:
+        _account.update(state="needs_attention", checked_at=time.time())
+        raise RuntimeError("Account library unavailable; verify your connection.") from None
 
 # ---------------------------------------------------------------- YouTube catalog
 
 
 def _session():
     import requests
-    s = requests.Session()
+    class BoundedSession(requests.Session):
+        def request(self, *args, **kwargs):
+            kwargs.setdefault("timeout", 20)
+            return super().request(*args, **kwargs)
+    s = BoundedSession()
     if relay():
+        s.trust_env = False
         s.proxies.update({"http": relay(), "https": relay()})
     return s
 
@@ -127,7 +395,11 @@ def ytm(radio: bool = False):
             kw = {"requests_session": _session()}
             if radio and RADIO_LOCATION:
                 kw["location"] = RADIO_LOCATION
-            _clients[key] = YTMusic(str(AUTH), **kw) if AUTH.exists() else YTMusic(**kw)
+            if OAUTH.exists():
+                kw["oauth_credentials"] = _oauth_credentials()
+                _clients[key] = YTMusic(str(OAUTH), **kw)
+            else:
+                _clients[key] = YTMusic(str(AUTH), **kw) if AUTH.exists() else YTMusic(**kw)
         return _clients[key]
 
 
@@ -225,7 +497,7 @@ def audio(vid: str) -> Path:
             for m in made:
                 m.unlink(missing_ok=True)
             low = (proc.stderr or "").lower()
-            _record("blocked" if any(m in low for m in BLOCK_MARKERS) else "failed", proc.stderr or "")
+            _record("blocked" if any(m in low for m in BLOCK_MARKERS) else "failed", "YouTube refused the download" if any(m in low for m in BLOCK_MARKERS) else "Download failed")
             raise RuntimeError("blocked" if any(m in low for m in BLOCK_MARKERS) else "download failed")
         final = CACHE / f"{vid}{made[0].suffix}"
         made[0].replace(final)
@@ -274,7 +546,7 @@ def rpc(msg: dict):
                 return {"jsonrpc": "2.0", "id": i, "error": {"code": -32602, "message": "Unknown tool."}}
             r = {"content": [{"type": "text", "text": json.dumps(v)}], "structuredContent": v, "isError": False}
         except Exception as e:  # noqa: BLE001
-            r = {"content": [{"type": "text", "text": str(e)[:300]}], "isError": True}
+            r = {"content": [{"type": "text", "text": "YouTube Music request failed; check connection status."}], "isError": True}
     else:
         return {"jsonrpc": "2.0", "id": i, "error": {"code": -32601, "message": "Unknown method."}}
     return {"jsonrpc": "2.0", "id": i, "result": r}
@@ -290,11 +562,52 @@ PORT = int(os.environ.get("PORT", "9206"))
 TRUSTED_ORIGINS = _csv("WIZARD_TRUSTED_ORIGINS")
 
 
+RELAY_ORIGIN = os.environ.get("WIZARD_RELAY_IMPORT_ORIGIN", "")
+RELAY_KEY = DATA / "relay-import-key"
+
+
+def relay_import_key():
+    try:
+        info = RELAY_KEY.lstat()
+        import stat
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            return ""
+        if info.st_size > 256:
+            return ""
+        value = RELAY_KEY.read_text().strip()
+        return value if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", value) else ""
+    except (OSError, UnicodeError):
+        return ""
+
+
+def relay_status(d):
+    check = d.get("relay_check") or {}
+    state = check.get("state", "imported_unverified") if relay() else "not_configured"
+    messages = {
+        "not_configured": "No valid home relay configured. Import your private pairing file.",
+        "imported_unverified": "Imported privately, not paired yet. Test relay connectivity next.",
+        "verified": "Paired: authenticated relay reached YouTube. Test playback separately.",
+        "provider_blocked": "Relay probe reached a provider refusal (403/429). Not paired; check the home connection.",
+        "failed": "Relay connectivity failed. Check Tailscale access, the home service and its token, then retry.",
+    }
+    if state not in messages:
+        state = "imported_unverified" if relay() else "not_configured"
+    try:
+        origin = urllib.parse.urlsplit(RELAY_ORIGIN)
+        enabled = (origin.scheme == "https" and bool(origin.hostname) and not origin.username
+                   and not origin.password and origin.port != 0
+                   and RELAY_ORIGIN == f"https://{origin.netloc}" and bool(relay_import_key()))
+    except ValueError:
+        enabled = False
+    return {"state": state, "at": check.get("at", 0), "message": messages[state], "import_enabled": enabled}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        sys.stderr.write("%s %s\n" % (self.command, self.path.split("?")[0]))
+        # Never log arbitrary request targets (credentials can be misplaced in URLs).
+        sys.stderr.write("%s request\n" % self.command)
 
     def send(self, code: int, body=None, ctype: str = "application/json", extra: dict | None = None):
         b = body if isinstance(body, bytes) else b"" if body is None else json.dumps(body).encode()
@@ -326,6 +639,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"ok": True, "app": APP_ID, "version": VERSION})
             if path == "/api/status":
                 return self.send(200, status())
+            if path in ("/api/music/library/playlists", "/api/music/library/likes", "/api/music/library/playlist"):
+                return self.send(200, library(path.rsplit("/", 1)[1], q("id"), int(q("limit", "40"))))
             if path == "/api/music/search":
                 return self.send(200, {"tracks": search(q("q"), q("kind", "songs"), min(int(q("limit", "20")), 40))})
             if path == "/api/music/radio":
@@ -350,7 +665,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             return self.send(400, {"error": str(e)})
         except Exception as e:  # noqa: BLE001
-            print("GET failed", path, repr(e)[:300], file=sys.stderr)
+            print("GET failed", path, type(e).__name__, file=sys.stderr)
             return self.send(502, {"error": "blocked" if "blocked" in str(e) else "source_unavailable", "status": status()["playback"]})
 
     def do_HEAD(self):
@@ -358,25 +673,64 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/relay"):
+            # A separate owner-provisioned credential authenticates these secret writes;
+            # upstream shell login alone is not inferred from spoofable identity headers.
+            self.close_connection = True
+            import_key = relay_import_key()
+            if not relay_status(_load())["import_enabled"]:
+                return self.send(503, {"error": "Private import is disabled. Owner must configure HTTPS origin and private import key; see README."})
+            if (self.headers.get("Origin") != RELAY_ORIGIN
+                    or self.headers.get("Host") != urllib.parse.urlsplit(RELAY_ORIGIN).netloc
+                    or self.headers.get("Sec-Fetch-Site", "same-origin") != "same-origin"
+                    or urllib.parse.urlsplit(self.path).query):
+                return self.send(403, {"error": "Exact same-origin HTTPS relay operation required."})
+            auth = self.headers.get("Authorization", "")
+            if not import_key or not secrets.compare_digest(auth.encode(), ("Bearer " + import_key).encode()):
+                return self.send(401, {"error": "Private relay import authorization required."})
         if self.cross_site_write():
             return self.send(403, {"error": "Cross-origin writes refused."})
         try:
-            n = int(self.headers.get("Content-Length") or 0)
-            if n > 65536:
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                raise ValueError("Invalid request length.") from None
+            if n < 0 or n > 65536 or self.headers.get("Transfer-Encoding"):
                 return self.send(413, {"error": "too large"})
-            body = json.loads(self.rfile.read(n) or b"{}")
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except (ValueError, UnicodeError):
+                raise ValueError("Invalid JSON request.") from None
+            if not isinstance(body, dict):
+                raise ValueError("Expected a JSON object.")
             if path == "/mcp":
                 out = rpc(body if isinstance(body, dict) else {})
                 return self.send(202 if out is None else 200, out)
             if (self.headers.get("Content-Type") or "").split(";")[0] != "application/json":
                 return self.send(415, {"error": "Use application/json."})
             if path == "/api/relay":
-                return self.send(200, set_relay(str(body.get("relay", ""))))
+                if body != {"relay": ""}:
+                    raise ValueError("Raw relay addresses are not accepted. Use private file import.")
+                return self.send(200, set_relay(""))
+            if path == "/api/relay/import":
+                return self.send(200, import_pairing(body))
+            if path == "/api/relay/test":
+                return self.send(200, test_relay())
             if path == "/api/test":
                 return self.send(200, test_playback())
+            if path == "/api/account/start":
+                return self.send(200, account_start())
+            if path == "/api/account/poll":
+                return self.send(200, account_poll())
+            if path == "/api/account/check":
+                return self.send(200, account_check())
+            if path == "/api/account/disconnect":
+                return self.send(200, account_disconnect())
             return self.send(404, {"error": "not_found"})
         except ValueError as e:
             return self.send(400, {"error": str(e)})
+        except Exception:
+            return self.send(502, {"error": "Request unavailable. Check connection status."})
 
     def stream(self, p: Path):
         size = p.stat().st_size

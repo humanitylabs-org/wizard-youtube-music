@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+.venv/
+# Owner account and relay material must never be committed.
+oauth-client.json
+ytmusic-oauth.json
+ytmusic-browser.json
+cookies.txt
+settings.json
