@@ -2,9 +2,9 @@
 wizard: 0.2
 id: wizard-youtube-music
 name: YouTube Music
-type: service
+type: external
 category: system
-version: 0.1.0
+version: 0.1.1
 summary: YouTube catalog, optional account library and playback for Music; cloud Wizards may need an always-on home relay.
 tags: [audio]
 license: MIT
