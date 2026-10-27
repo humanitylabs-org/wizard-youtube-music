@@ -1,21 +1,41 @@
-/* YouTube Music connector. Shared look comes from wizard-ui.css. */
-.ytm-card { margin: 0 2px 12px; padding: 14px; border-radius: var(--r); background: var(--fill); display: grid; gap: 8px; }
-.ytm-card p { margin: 0; line-height: 1.45; }
-.ytm-card .wz-sec-h { padding: 0; }
-.ytm-req { background: var(--accent-soft); }
-.ytm-req b { font-size: 15px; }
-.ytm-state { font-size: 15px; font-weight: 600; }
-.ytm-state[data-state="ok"] { color: var(--accent); }
-.ytm-state[data-state="blocked"], .ytm-state[data-state="failed"] { color: var(--danger); }
+/* YouTube Music: connector pattern (wizard-os style/APP-DESIGN-RULES.md rule 5). Layout comes from wizard-layout.css;
+ * this file only places this app's own pieces. Kit variables only. */
+[hidden] { display: none !important; }
+/* A bare tab has only the vendored kit; inside the shell wizard-tokens.css defines these and wins (:where has no weight). */
+:where(:root) { --wz-space-2: 8px; --wz-space-3: 12px; --wz-space-4: 16px; --wz-overlay: var(--wz-surface-raised); --wz-base: var(--wz-canvas); }
+/* Same values as the live kit's .wz-button for a bare tab (the vendored kit predates it). Element-weight selectors:
+ * they beat the vendored button reset, and the live kit's .wz-button wins over them inside the shell. */
+button:where(.wz-button), a:where(.wz-button) { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: 8px 16px; border-radius: var(--r-tile); background: var(--accent); color: var(--on-accent); font-weight: 600; text-decoration: none; }
+button:where(.wz-button.secondary), a:where(.wz-button.secondary) { background: var(--fill); color: var(--ink); border: 1px solid var(--line-2); }
+button:where(.wz-button:disabled) { opacity: .45; cursor: default; }
+
+.ytm-scroll { padding-top: 12px; padding-bottom: 32px; display: flex; flex-direction: column; gap: var(--wz-space-3); }
+.wz-sec + .wz-sec { border-top: 0; }
+.ytm-logo { overflow: hidden; padding: 0; background: var(--fill); }
+.ytm-logo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ytm-ic { background: var(--accent-soft); }
+.ytm-ic svg { width: 20px; height: 20px; fill: var(--accent); }
+.ytm-ic .ytm-line { fill: none; stroke: var(--accent); stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.wz-row .wz-pill, .ytm-sm { flex: none; }
+.wz-row .wz-main small { overflow-wrap: anywhere; }
+.ytm-state[data-state="blocked"], .ytm-state[data-state="failed"] { color: var(--danger) !important; }
+.ytm-note { display: grid; gap: 6px; padding: 0 8px; font-size: 13px; line-height: 1.45; color: var(--ink-3); }
+.ytm-note p { margin: 0; }
+.ytm-note b { color: var(--ink-2); }
+@container wz-app (min-width: 960px) { .ytm-note { grid-template-columns: 1fr 1fr; gap: var(--wz-space-4); } }
 .ytm-small { font-size: 13px; color: var(--ink-3); }
-.ytm-small[hidden], #relay-form[hidden] { display: none; }
 .ytm-col { display: grid; gap: 8px; }
-.ytm-code { display: block; padding: 8px 10px; border-radius: var(--r-tile); background: var(--fill-2); font: 12px ui-monospace, Menlo, monospace; word-break: break-all; user-select: all; }
-.ytm-btn { justify-self: start; min-height: 40px; padding: 0 16px; border-radius: 99px; font-weight: 700; background: var(--fill-2); color: var(--ink); }
-.ytm-go { background: var(--accent); color: var(--on-accent); }
-.ytm-btn:disabled { opacity: .5; }
-.ytm-link { text-decoration: underline; color: inherit; padding: 0 4px; }
-.ytm-foot { margin: 4px 6px 0; }
-.ytm-card ol { padding-inline-start: 22px; line-height: 1.5; }
-#help-request { width: 100%; min-height: 150px; resize: vertical; }
+.ytm-col p { margin: 0; line-height: 1.45; }
+.ytm-col .wz-actions { padding: 4px 0; }
+.ytm-col ol { margin: 0; padding-inline-start: 22px; line-height: 1.5; }
+.ytm-col label { font-size: 14px; color: var(--ink-2); }
+.ytm-check { display: flex; gap: 8px; align-items: flex-start; }
+.ytm-check input { margin-top: 3px; }
+.ytm-status { font-weight: 600; }
+.ytm-code { display: inline-block; padding: 2px 8px; border-radius: var(--r-tile); background: var(--fill-2); font: 600 14px ui-monospace, Menlo, monospace; letter-spacing: .04em; user-select: all; }
+.ytm-link { text-decoration: underline; color: inherit; padding: 0 4px; min-height: 32px; }
+.ytm-danger { color: var(--danger) !important; }
+#help-request { width: 100%; height: auto; min-height: 150px; padding: 10px 14px; border-radius: var(--r-tile); resize: vertical; }
 #auth-step a { color: var(--accent); text-decoration: underline; }
+.ytm-details { padding: 0 8px 8px; display: grid; gap: 6px; }
+.ytm-details p { margin: 0; line-height: 1.45; }

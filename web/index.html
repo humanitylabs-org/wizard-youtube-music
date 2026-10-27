@@ -7,71 +7,113 @@
   <title>YouTube Music</title>
   <script src="boot.js"></script>
   <link rel="stylesheet" href="wizard-ui.css">
+  <link rel="stylesheet" href="wizard-layout.css">
   <link rel="stylesheet" href="styles.css">
   <script defer src="theme-client.js"></script>
   <script defer src="app.js"></script>
+  <script defer src="wizard-sheet.js"></script>
 </head>
 <body>
 <div class="wz-app">
 <header class="wz-head"><h1>YouTube Music</h1></header>
-<main class="wz-scroll">
-  <section class="ytm-card ytm-req" aria-label="Choose your network">
-    <b>Where does your Wizard run?</b>
-    <p>At home: try Test playback directly. A relay is usually unnecessary.</p>
-    <p>On a VPS / cloud server: YouTube may block data-center addresses. Use an always-on Mac, Windows or Linux computer at home as a relay. It must stay awake and connected to your private Tailscale network.</p>
-    <p>Home internet does not guarantee playback or reduce account risk. This unofficial connector cannot promise ad-free or unlimited playback, or Premium features. Connecting an account is separate from playback.</p>
-  </section>
-  <section class="ytm-card" aria-labelledby="st-h">
-    <h2 class="wz-sec-h" id="st-h">Playback status</h2>
-    <p id="state" class="ytm-state">Checking…</p>
-    <button type="button" class="ytm-btn ytm-go" id="test">Test playback</button>
-  </section>
-  <section class="ytm-card" aria-labelledby="account-h">
-    <h2 class="wz-sec-h" id="account-h">Your YouTube account · optional</h2>
-    <p id="via" class="ytm-small">Checking account…</p>
-    <p>Connect to read your playlists and liked songs. No passwords, browser cookies or authorization codes in chat. Complete consent only on Google's website. OAuth needs your own Google Cloud TV/device client, privately configured by the owner; this is not a built-in Google sign-in service.</p>
-    <button type="button" class="ytm-btn" id="connect">Connect account</button>
-    <button type="button" class="ytm-btn" id="check-account">Verify connection</button>
-    <button type="button" class="ytm-btn" id="disconnect">Disconnect / cancel</button>
-    <div id="auth-step" hidden>
-      <p>Open <a id="google-link" target="_blank" rel="noopener noreferrer">Google authorization</a> and enter <strong id="user-code"></strong>. Do not share this code. Then return here.</p>
-      <button type="button" class="ytm-btn" id="finish">I completed Google authorization</button>
-      <p id="auth-progress" role="status"></p>
+<main class="wz-scroll ytm-scroll">
+  <div class="wz-conn">
+    <span class="wz-tile ytm-logo"><img src="icon.png" alt=""></span>
+    <span class="wz-main"><b>YouTube Music</b><small>Music can search, play radio and stream songs through it</small></span>
+    <span id="pill" class="wz-pill off">Not connected</span>
+  </div>
+
+  <section class="wz-sec" aria-labelledby="st-h">
+    <h2 class="wz-sec-h" id="st-h">Playback</h2>
+    <ul class="wz-list"><li><div class="wz-row">
+      <span class="wz-tile ytm-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M8 5.5v13l10-6.5z"/></svg></span>
+      <span class="wz-main"><b id="state" class="ytm-state">Checking…</b><small id="state-via"></small></span>
+      <button type="button" class="wz-button secondary ytm-sm" id="test">Test playback</button>
+    </div></li></ul>
+    <div class="ytm-note" aria-label="Choose your network">
+      <p><b>Where does your Wizard run?</b> At home: try Test playback directly. A relay is usually unnecessary.</p>
+      <p>On a VPS / cloud server: YouTube may block data-center addresses. Use an always-on Mac, Windows or Linux computer at home as a relay. It must stay awake and connected to your private Tailscale network.</p>
     </div>
-    <p>Disconnect removes local account tokens, not your Google consent. Revoke access in your Google Account too. Personal library endpoints are available to Music integrations; this does not import or change your Music preferences automatically.</p>
   </section>
-  <section class="ytm-card" aria-labelledby="relay-h">
-    <h2 class="wz-sec-h" id="relay-h">Home relay · for cloud Wizards</h2>
+
+  <section class="wz-sec" aria-labelledby="account-h">
+    <h2 class="wz-sec-h" id="account-h">Accounts <small>optional</small> <span class="wz-count" id="account-count">0</span></h2>
+    <ul class="wz-list"><li><button type="button" class="wz-row" id="account-row">
+      <span class="wz-tile ytm-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path class="ytm-line" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm-7 8c0-3.3 3.1-6 7-6s7 2.7 7 6"/></svg></span>
+      <span class="wz-main"><b id="account-name">YouTube account</b><small id="via">Checking account…</small></span>
+      <span id="account-pill" class="wz-pill off">Signed out</span>
+    </button></li></ul>
+  </section>
+
+  <section class="wz-sec" aria-labelledby="relay-h">
+    <h2 class="wz-sec-h" id="relay-h">Home relay <small>for cloud Wizards</small></h2>
+    <ul class="wz-list"><li><button type="button" class="wz-row" id="relay-row">
+      <span class="wz-tile ytm-ic" aria-hidden="true"><svg viewBox="0 0 24 24"><path class="ytm-line" d="M3 11 12 4l9 7M6 9.5V20h12V9.5M10 20v-5h4v5"/></svg></span>
+      <span class="wz-main"><b>Home relay</b><small id="relay-state" role="status">Checking relay…</small></span>
+      <span id="relay-pill" class="wz-pill off">Not set up</span>
+    </button></li></ul>
+  </section>
+
+  <div class="wz-actions"><button type="button" class="wz-button" id="connect">Connect</button></div>
+
+  <details class="wz-more"><summary>Details</summary><div class="ytm-details">
+    <p>Home internet does not guarantee playback or reduce account risk. This unofficial connector cannot promise ad-free or unlimited playback, or Premium features. Connecting an account is separate from playback.</p>
+    <p>Music discovers this connector for search, radio and playback. Availability depends on YouTube, your network and your account entitlements.</p>
+    <p id="about"></p>
+  </div></details>
+</main>
+<p id="status" class="wz-status" role="status" aria-live="polite"></p>
+</div>
+
+<dialog id="account-sheet" class="wz-sheet" aria-labelledby="account-sheet-h">
+  <h2 id="account-sheet-h">Your YouTube account</h2>
+  <div class="ytm-col">
+    <p>Connect to read your playlists and liked songs. No passwords, browser cookies or authorization codes in chat. Complete consent only on Google's website. OAuth needs your own Google Cloud TV/device client, privately configured by the owner; this is not a built-in Google sign-in service.</p>
+    <div class="wz-actions"><button type="button" class="wz-button secondary" id="check-account">Verify connection</button>
+    <button type="button" class="wz-button secondary ytm-danger" id="disconnect">Disconnect / cancel</button></div>
+    <p class="ytm-small">Disconnect removes local account tokens, not your Google consent. Revoke access in your Google Account too. Personal library endpoints are available to Music integrations; this does not import or change your Music preferences automatically.</p>
+  </div>
+</dialog>
+
+<dialog id="auth-sheet" class="wz-sheet" aria-labelledby="auth-sheet-h">
+  <h2 id="auth-sheet-h">Connect your YouTube account</h2>
+  <div id="auth-step" class="ytm-col" hidden>
+    <p>Open <a id="google-link" target="_blank" rel="noopener noreferrer">Google authorization</a> and enter <strong id="user-code" class="ytm-code"></strong> Do not share this code. Then return here.</p>
+    <div class="wz-actions"><button type="button" class="wz-button" id="finish">I completed Google authorization</button></div>
+    <p id="auth-progress" class="ytm-small" role="status"></p>
+  </div>
+</dialog>
+
+<dialog id="relay-sheet" class="wz-sheet" aria-labelledby="relay-sheet-h">
+  <h2 id="relay-sheet-h">Home relay</h2>
+  <div class="ytm-col">
+    <p id="relay-sheet-state" class="ytm-status"></p>
     <ol>
       <li>Choose an always-on home computer. Ask your agent for the instructions matching Mac, Windows or Linux; do not run a Linux installer on Windows.</li>
       <li>Connect the computer and Wizard to your own private Tailscale network. Keep the authenticated relay private; never open its port publicly.</li>
       <li>Install Wizard Home Relay using its reviewed platform instructions and export a new private pairing JSON file. Import it only here on your private authenticated HTTPS Wizard. Never attach it to chat: it contains a reusable secret.</li>
       <li>Confirm the file belongs to your home Tailscale device. Import, test relay connectivity, then test playback separately. Account connection is another independent check.</li>
     </ol>
-    <button type="button" class="ytm-btn" id="ask-help">Help me set this up</button>
-    <div id="help-step" hidden>
+    <div class="wz-actions"><button type="button" class="wz-button secondary" id="ask-help">Help me set this up</button></div>
+    <div id="help-step" class="ytm-col" hidden>
       <p>Copy this request, open Agents, choose your agent's chat and paste it. Nothing has been sent and no notification is scheduled.</p>
       <textarea id="help-request" class="wz-input" readonly aria-label="Setup request"></textarea>
-      <button type="button" class="ytm-btn" id="copy-help">Copy request</button>
-      <button type="button" class="ytm-btn" id="open-agents">Open Agents</button>
+      <div class="wz-actions"><button type="button" class="wz-button secondary" id="copy-help">Copy request</button>
+      <button type="button" class="wz-button secondary" id="open-agents">Open Agents</button></div>
     </div>
-    <p id="relay-state" class="ytm-small" role="status">Checking relay…</p>
     <p id="relay-setup" class="ytm-small">Private import is disabled until the owner configures the HTTPS origin and a private import authorization key (see README). No file can be imported yet.</p>
     <label for="relay-key">Private import authorization key (never in chat)</label>
     <input id="relay-key" class="wz-input" type="password" autocomplete="off">
     <p id="relay-on" class="ytm-small" hidden>Relay settings saved; see connectivity status above. <button type="button" class="ytm-link" id="relay-off">Remove locally</button></p>
-    <button type="button" class="ytm-btn" id="relay-test">Test relay connectivity</button>
+    <div class="wz-actions"><button type="button" class="wz-button secondary" id="relay-test">Test relay connectivity</button></div>
     <form id="relay-form" class="ytm-col" autocomplete="off">
       <label for="relay-file">Private home relay pairing file</label>
       <input id="relay-file" class="wz-input" type="file" accept=".json,application/json">
-      <label><input id="relay-confirm" type="checkbox" required> I confirmed this file belongs to my home Tailscale device and scoped its tailnet access to this Wizard.</label>
-      <button type="submit" class="ytm-btn" id="save">Import privately (not a connectivity test)</button>
+      <label class="ytm-check"><input id="relay-confirm" type="checkbox" required> I confirmed this file belongs to my home Tailscale device and scoped its tailnet access to this Wizard.</label>
+      <div class="wz-actions"><button type="submit" class="wz-button secondary" id="save">Import privately (not a connectivity test)</button></div>
     </form>
     <p class="ytm-small">After verified import, delete the export using your file manager. Local removal here does not rotate the home token: revoke or rotate it on the home computer. No remote install or reply notification is performed by these controls.</p>
-  </section>
-  <p class="ytm-small ytm-foot">Music discovers this connector for search, radio and playback. Availability depends on YouTube, your network and your account entitlements.</p>
-</main>
-<p id="status" class="wz-status" role="status" aria-live="polite"></p>
-</div>
+  </div>
+</dialog>
 </body>
 </html>
