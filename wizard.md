@@ -4,7 +4,7 @@ id: wizard-youtube-music
 name: YouTube Music
 type: service
 category: system
-version: 0.1.2
+version: 0.1.3
 summary: YouTube catalog, optional account library and playback for Music; cloud Wizards may need an always-on home relay.
 tags: [audio]
 license: MIT
@@ -29,6 +29,9 @@ health: /healthz
 provides: [music-source, youtube-music]
 uses: []
 needs: []
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # YouTube Music
