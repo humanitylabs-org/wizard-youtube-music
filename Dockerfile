@@ -1,4 +1,4 @@
-FROM node:22-bookworm-slim@sha256:3ed98443660ff48413b5af19ecefce3b9d50845a901a43420d47cc63a9fddbe9
+FROM node:22.23.5-bookworm-slim@sha256:e9f565d32859f0cbfb52125eafe8be39390f24dac302dc3cdf566e8ba3ab21ee
 RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY requirements.txt /opt/requirements.txt
 RUN python3 -m venv /opt/ytm && /opt/ytm/bin/pip install --no-cache-dir -r /opt/requirements.txt
