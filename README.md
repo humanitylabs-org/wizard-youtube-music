@@ -49,7 +49,7 @@ Library access may reveal playlists/likes to the authenticated owner of this Wiz
 
 ## API for Music
 
-Existing routes: `GET /api/status`, `/api/music/search?q=`, `/api/music/radio?seed=`, `/api/music/related-artists?name=`, `/api/music/genre?genre=`, `/api/music/audio/<videoId>` (Range supported).
+Existing routes: `GET /api/status`, `/api/music/search?q=`, `/api/music/radio?seed=`, `/api/music/related-artists?name=`, `/api/music/genre?genre=`, `/api/music/audio/<videoId>` (Range supported; `?live=1` sends the song from byte 0 while it is still downloading, with its exact size as Content-Length when YouTube gives one, for Music's progressive play, wizard-music#46).
 
 Additive account routes (JSON POST, no secrets/codes in request bodies):
 - `/api/account/start` → `verification_url`, `user_code`, `expires_in` (owner only; never forward to an agent).
