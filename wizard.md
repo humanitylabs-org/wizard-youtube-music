@@ -4,7 +4,7 @@ id: wizard-youtube-music
 name: YouTube Music
 type: service
 category: system
-version: 0.1.3
+version: 0.1.4
 summary: YouTube catalog, optional account library and playback for Music; cloud Wizards may need an always-on home relay.
 tags: [audio]
 license: MIT
@@ -42,4 +42,4 @@ Try playback directly on a home Wizard. YouTube may block cloud/VPS networks; an
 
 Optional own-account device OAuth is documented in README.md. It requires an owner-provisioned Google Cloud TV/device client and consent on Google. Account status is separate from playback; a credential file is unverified until an authenticated library call succeeds. The additive `/api/music/library/playlists`, `/likes` and `/playlist?id=` endpoints use the existing sanitized track shape; Music clients must add library consumption UI. No passwords or cookies should be sent through chat. No automatic setup message or notification delivery is claimed.
 
-Contract `wizard.music-source/1`: `GET /api/status`, `/api/music/search?q=`, `/api/music/radio?seed=`, `/api/music/related-artists?name=`, `/api/music/genre?genre=`, `/api/music/audio/<videoId>` (Range supported). Errors return 502 with `error: blocked` when YouTube refuses this network.
+Contract `wizard.music-source/1`: `GET /api/status`, `/api/music/search?q=`, `/api/music/radio?seed=`, `/api/music/related-artists?name=`, `/api/music/genre?genre=`, `/api/music/audio/<videoId>` (Range supported; `?live=1` sends the song from byte 0 while it is still downloading, with its exact size as Content-Length when YouTube gives one, for Music's progressive play, wizard-music#46). Errors return 502 with `error: blocked` when YouTube refuses this network.

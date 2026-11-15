@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_ID = "wizard-youtube-music"
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 CONTRACT = "wizard.music-source/1"
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -506,6 +506,126 @@ def audio(vid: str) -> Path:
         return final
 
 
+LIVE_SECONDS = 600  # the owner hears the song meanwhile, so a long mix may take longer than audio()'s 150 s (wizard-music#46)
+
+
+def _live_cmd(tmp: Path, vid: str) -> list[str]:
+    """yt-dlp writing straight into one growing file, printing its exact size before the download starts."""
+    cmd = [YTDLP, "-q", "--no-warnings", "--no-cache-dir", "--no-playlist", "--js-runtimes", "node",
+           "--no-part", "--fixup", "never", "--no-simulate", "--print", "before_dl:%(filesize)s %(ext)s",
+           "-f", "bestaudio[ext=m4a]/bestaudio", "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
+    if relay():
+        cmd[1:1] = ["--proxy", relay()]
+    if AUTH.with_name("cookies.txt").exists():
+        cmd[1:1] = ["--cookies", str(AUTH.with_name("cookies.txt"))]
+    return cmd
+
+
+def live_audio(vid: str, send_head, write) -> None:
+    """Send a song while yt-dlp is still downloading it (wizard-music#46, asked for with ?live=1).
+
+    send_head(size or None, ext) is called once the first bytes are on disk; write(bytes) gets the file as it grows.
+    The finished file joins the cache exactly like audio(). Raises before send_head when the download never starts.
+    """
+    if not YT_ID.match(vid):
+        raise LookupError("bad id")
+    with _lock:
+        lock = _dl_locks.setdefault(vid, threading.Lock())
+    if not lock.acquire(blocking=False):  # this song is downloading already: wait for it, as before
+        with lock:
+            pass
+        hit = audio(vid)
+        send_head(hit.stat().st_size, hit.suffix[1:])
+        with hit.open("rb") as fh:
+            while chunk := fh.read(262144):
+                write(chunk)
+        return
+    try:
+        hit = _cached(vid)
+        if hit:
+            os.utime(hit)
+            send_head(hit.stat().st_size, hit.suffix[1:])
+            with hit.open("rb") as fh:
+                while chunk := fh.read(262144):
+                    write(chunk)
+            return
+        tmp = CACHE / f".{vid}.{os.getpid()}.{threading.get_ident()}.live"
+        err = tempfile.TemporaryFile()
+        proc = subprocess.Popen(_live_cmd(tmp, vid), stdout=subprocess.PIPE, stderr=err, text=True)
+        timer = threading.Timer(LIVE_SECONDS, proc.kill)
+        timer.start()
+        try:
+            _live_send(vid, proc, err, tmp, send_head, write)
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+            err.close()
+            for m in CACHE.glob(f"{tmp.name}.*"):
+                m.unlink(missing_ok=True)
+    finally:
+        lock.release()
+
+
+def _live_failed(proc, err) -> RuntimeError:
+    proc.wait()
+    err.seek(0)
+    low = err.read().decode("utf-8", "replace").lower()
+    blocked = any(m in low for m in BLOCK_MARKERS)
+    _record("blocked" if blocked else "failed", "YouTube refused the download" if blocked else "Download failed")
+    return RuntimeError("blocked" if blocked else "download failed")
+
+
+def _live_send(vid, proc, err, tmp, send_head, write) -> None:
+    line = (proc.stdout.readline() or "").split()
+    if len(line) != 2 or not re.fullmatch(r"[a-z0-9]{1,5}", line[1]):
+        raise _live_failed(proc, err)
+    size = int(line[0]) if line[0].isdigit() and int(line[0]) > 0 else None
+    path = Path(f"{tmp}.{line[1]}")
+    while not (path.exists() and path.stat().st_size > 0):  # first bytes, or the reason it never started
+        if proc.poll() is not None:
+            raise _live_failed(proc, err)
+        time.sleep(0.05)
+    send_head(size, line[1])
+    sent, listening = 0, [True]
+
+    def out(chunk: bytes) -> None:
+        if listening[0] and chunk:
+            try:
+                write(chunk)
+            except OSError:
+                listening[0] = False  # keep downloading so the song still lands in the cache
+
+    with path.open("rb") as fh:
+        while True:
+            done = proc.poll() is not None
+            have = path.stat().st_size
+            # The last byte waits for a clean finish, so a short or oversized download never looks complete.
+            cap = have if size is None else min(have, size - 1)
+            if cap > sent:
+                fh.seek(sent)
+                chunk = fh.read(min(262144, cap - sent))
+                out(chunk)
+                sent += len(chunk)
+                continue
+            if done:
+                break
+            time.sleep(0.05)
+    if proc.returncode != 0 or path.stat().st_size == 0:
+        raise _live_failed(proc, err)
+    final = CACHE / f"{vid}{path.suffix}"
+    path.replace(final)
+    _record("ok")
+    _evict()
+    if size is not None:
+        if final.stat().st_size != size:
+            raise RuntimeError("size changed")  # the cache keeps the song; this answer is cut short
+        with final.open("rb") as fh:
+            fh.seek(sent)
+            out(fh.read())
+
+
 def test_playback() -> dict:
     for p in CACHE.glob(f"{PROBE_VIDEO}.*"):
         p.unlink(missing_ok=True)
@@ -650,6 +770,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/music/genre":
                 return self.send(200, {"tracks": genre_tracks(q("genre"))})
             m = re.match(r"^/api/music/audio/([A-Za-z0-9_-]{11})$", path)
+            if m and q("live") == "1":
+                return self.stream_live(m.group(1))
             if m:
                 return self.stream(audio(m.group(1)))
             name = "index.html" if path == "/" else path[1:]
@@ -731,6 +853,33 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(400, {"error": str(e)})
         except Exception:
             return self.send(502, {"error": "Request unavailable. Check connection status."})
+
+    def stream_live(self, vid: str):
+        """The whole song from byte 0 while it downloads; the Music hub caches it and serves ranges itself."""
+        sent = {"head": False}
+
+        def head(size, ext):
+            self.send_response(200)
+            self.send_header("Content-Type", {"m4a": "audio/mp4", "webm": "audio/webm", "opus": "audio/ogg", "mp3": "audio/mpeg"}.get(ext, "application/octet-stream"))
+            if size is None:
+                self.send_header("Connection", "close")
+                self.close_connection = True
+            else:
+                self.send_header("Content-Length", str(size))
+            self.end_headers()
+            sent["head"] = True
+
+        def write(chunk):
+            if self.command != "HEAD":
+                self.wfile.write(chunk)
+                self.wfile.flush()
+
+        try:
+            live_audio(vid, head, write)
+        except Exception:
+            if not sent["head"]:
+                raise
+            self.close_connection = True  # cut short: the hub sees a short body and fails this play
 
     def stream(self, p: Path):
         size = p.stat().st_size
