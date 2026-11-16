@@ -75,3 +75,27 @@ def test_item_keeps_only_catalog_fields(ytm):
 def test_mcp_lists_tools(ytm):
     out = ytm.rpc({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/list'})
     assert {t['name'] for t in out['result']['tools']} == {'youtube_music_status', 'youtube_music_search', 'youtube_music_test'}
+
+
+def test_public_playlist_reads_tracks_without_the_account(ytm, monkeypatch):
+    seen = {}
+
+    class Public:
+        def get_playlist(self, pid, limit=100):
+            seen['pid'], seen['limit'] = pid, limit
+            return {'tracks': [{'videoId': 'aaaaaaaaaaa', 'title': 'One', 'artists': [{'name': 'A', 'id': 'x'}], 'secret': 1},
+                               {'videoId': None, 'title': 'Unavailable'},
+                               {'videoId': 'bbbbbbbbbbb', 'title': 'Two'}]}
+
+    def client(radio=False, public=False):
+        assert public is True, 'a public playlist never uses the owner account'
+        return Public()
+    monkeypatch.setattr(ytm, 'ytm', client)
+    tracks = ytm.public_playlist('VLPLtest1234567890', 500)
+    assert seen == {'pid': 'PLtest1234567890', 'limit': 200}
+    assert [t['videoId'] for t in tracks] == ['aaaaaaaaaaa', 'bbbbbbbbbbb']
+    assert tracks[0]['artists'] == [{'name': 'A'}] and 'secret' not in tracks[0]
+    for bad in ['short', 'PL../../etc', 'x' * 161]:
+        with pytest.raises(ValueError):
+            ytm.public_playlist(bad)
+    assert ytm.status()['capabilities']['public_playlist'] == '/api/music/playlist'

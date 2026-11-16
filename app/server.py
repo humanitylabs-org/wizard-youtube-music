@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_ID = "wizard-youtube-music"
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 CONTRACT = "wizard.music-source/1"
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -229,7 +229,8 @@ def status() -> dict:
             "name": "YouTube Music", "ready": p.get("state") == "ok", "playback": {**p, "via": via, "message": message},
             "relay": bool(relay()), "relay_status": relay_status(d), "account": account_status()["state"] == "connected",
             "account_status": account_status(),
-            "capabilities": {"library": ["playlists", "likes", "playlist"], "library_path": "/api/music/library/"},
+            "capabilities": {"library": ["playlists", "likes", "playlist"], "library_path": "/api/music/library/",
+                             "public_playlist": "/api/music/playlist"},
             "requirement": "Use home internet directly, or an always-on home relay for a cloud Wizard. Neither guarantees playback."}
 
 # ---------------------------------------------------------------- owner account (documented ytmusicapi device OAuth)
@@ -387,15 +388,17 @@ def _session():
     return s
 
 
-def ytm(radio: bool = False):
-    key = "radio" if radio else "main"
+def ytm(radio: bool = False, public: bool = False):
+    key = "public" if public else "radio" if radio else "main"
     with _lock:
         if key not in _clients:
             from ytmusicapi import YTMusic
             kw = {"requests_session": _session()}
             if radio and RADIO_LOCATION:
                 kw["location"] = RADIO_LOCATION
-            if OAUTH.exists():
+            if public:
+                _clients[key] = YTMusic(**kw)  # never the owner's account: public data only
+            elif OAUTH.exists():
                 kw["oauth_credentials"] = _oauth_credentials()
                 _clients[key] = YTMusic(str(OAUTH), **kw)
             else:
@@ -436,6 +439,20 @@ def related_artists(name: str) -> list[str]:
         return []
     info = ytm().get_artist(hit["browseId"])
     return [i.get("title") for i in ((info.get("related") or {}).get("results") or [])[:15] if i.get("title")]
+
+
+PLAYLIST_ID = re.compile(r"[A-Za-z0-9_-]{10,160}")
+
+
+def public_playlist(pid: str, limit: int = 200) -> list[dict]:
+    """Tracks of a public YouTube / YouTube Music playlist, in order, without the owner's account
+    (wizard-os#654: Music plays a saved playlist itself instead of opening YouTube)."""
+    pid = pid[2:] if pid.startswith("VL") else pid
+    if not PLAYLIST_ID.fullmatch(pid):
+        raise ValueError("Invalid playlist id")
+    limit = max(1, min(int(limit), 200))
+    raw = ytm(public=True).get_playlist(pid, limit=limit)
+    return [i for i in (_item(r) for r in (raw.get("tracks") or [])[:limit]) if i]
 
 
 def genre_tracks(genre: str) -> list[dict]:
@@ -767,6 +784,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"tracks": radio(q("seed"), min(int(q("limit", "60")), 100))})
             if path == "/api/music/related-artists":
                 return self.send(200, {"artists": related_artists(q("name"))})
+            if path == "/api/music/playlist":
+                return self.send(200, {"tracks": public_playlist(q("id"), int(q("limit", "200") or 200))})
             if path == "/api/music/genre":
                 return self.send(200, {"tracks": genre_tracks(q("genre"))})
             m = re.match(r"^/api/music/audio/([A-Za-z0-9_-]{11})$", path)
