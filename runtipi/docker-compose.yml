@@ -1,6 +1,6 @@
 services:
   wizard-youtube-music:
-    image: ghcr.io/humanitylabs-org/wizard-youtube-music:sha-892fe8970ad82da1bb47647a7820540119db48a8@sha256:1e8c962b4f1b8ee48ccbe9e13d9228aab61c962cd0e0c905470231c85aadbed9
+    image: ghcr.io/humanitylabs-org/wizard-youtube-music:sha-855cc53daedaf62e4c09bf06a18603b1c72037a0@sha256:00d8350bd11fa97b408c3956f5c15c659dfdc7ec54523093504df50ded93a32f
     restart: unless-stopped
     user: 1000:1000
     cap_drop: [ALL]
