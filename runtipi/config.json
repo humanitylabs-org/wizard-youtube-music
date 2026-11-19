@@ -8,8 +8,8 @@
   "author": "Humanity Labs",
   "port": 9206,
   "categories": ["media"],
-  "tipi_version": 6,
-  "version": "0.1.5",
+  "tipi_version": 7,
+  "version": "0.1.6",
   "source": "https://github.com/humanitylabs-org/wizard-youtube-music",
   "exposable": false,
   "supported_architectures": ["arm64", "amd64"],
@@ -19,6 +19,7 @@
   "gid": 1000,
   "no_gui": false,
   "form_fields": [
-    {"type": "text", "label": "Trusted Wizard browser origin (scheme and port)", "env_variable": "WIZARD_TRUSTED_ORIGINS", "required": false, "default": ""}
+    {"type": "text", "label": "Trusted Wizard browser origin (scheme and port)", "env_variable": "WIZARD_TRUSTED_ORIGINS", "required": false, "default": ""},
+    {"type": "text", "label": "Tailnet proxy for a cloud Wizard whose Tailscale runs in userspace mode (optional, e.g. socks5://host.docker.internal:1055)", "env_variable": "WIZARD_TAILNET_PROXY", "required": false, "default": ""}
   ]
 }

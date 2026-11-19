@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_ID = "wizard-youtube-music"
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 CONTRACT = "wizard.music-source/1"
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -154,7 +154,7 @@ def _relay_probe(value):
     def write(sock, data):
         sock.settimeout(remaining())
         sock.sendall(data)
-    with socket.create_connection((u.hostname, u.port), timeout=remaining()) as sock:
+    with tailnet_connect(u.hostname, u.port, remaining()) as sock:
         # Offer ONLY password auth; a no-auth service cannot pass pairing.
         write(sock, b"\x05\x01\x02")
         if read(sock, 2) != b"\x05\x02":
@@ -187,6 +187,162 @@ def _relay_probe(value):
 def relay() -> str:
     r = _load().get("relay") or ""
     return r if isinstance(r, str) and valid_relay(r) else ""
+
+
+# ---------------------------------------------------------------- tailnet proxy (wizard-youtube-music#15)
+# A cloud Wizard whose Tailscale runs in userspace mode (`tailscaled --tun=userspace-networking`) has no route to
+# 100.64.0.0/10, so neither the host nor this container can open the relay's Tailscale address directly. Userspace
+# tailscaled offers a SOCKS5 (`--socks5-server`) or HTTP (`--outbound-http-proxy-listen`) proxy into the tailnet
+# instead. When the owner sets WIZARD_TAILNET_PROXY to that proxy, every connection to the home relay goes through it.
+# The relay itself is unchanged: still the paired 100.x address, still authenticated end to end.
+
+TAILNET_PROXY_ENV = "WIZARD_TAILNET_PROXY"
+
+
+def tailnet_proxy():
+    """The owner's tailnet proxy as (scheme, host, port, user, password), None when unset, or "invalid"."""
+    raw = os.environ.get(TAILNET_PROXY_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        u = urllib.parse.urlsplit(raw)
+        port = u.port
+        if (u.scheme not in ("socks5", "socks5h", "http") or not u.hostname or not port
+                or u.path not in ("", "/") or u.query or u.fragment):
+            return "invalid"
+        user = urllib.parse.unquote(u.username) if u.username else ""
+        password = urllib.parse.unquote(u.password) if u.password else ""
+        if len(user.encode()) > 255 or len(password.encode()) > 255:
+            return "invalid"
+        return ("http" if u.scheme == "http" else "socks5", u.hostname, port, user, password)
+    except ValueError:
+        return "invalid"
+
+
+def _recv_exact(sock, size):
+    data = b""
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise OSError("tailnet proxy closed")
+        data += chunk
+    return data
+
+
+def tailnet_connect(host: str, port: int, timeout: float):
+    """A socket connected to host:port on the tailnet: directly, or through the owner's tailnet proxy."""
+    import socket
+    proxy = tailnet_proxy()
+    if proxy is None:
+        return socket.create_connection((host, port), timeout=timeout)
+    if proxy == "invalid":
+        raise OSError("invalid tailnet proxy setting")
+    scheme, phost, pport, user, password = proxy
+    sock = socket.create_connection((phost, pport), timeout=timeout)
+    try:
+        sock.settimeout(timeout)
+        if scheme == "socks5":
+            sock.sendall(b"\x05\x02\x00\x02" if user or password else b"\x05\x01\x00")
+            ver, method = _recv_exact(sock, 2)
+            if ver != 5 or method not in ((0, 2) if user or password else (0,)):
+                raise OSError("tailnet proxy refused the method")
+            if method == 2:
+                u, pw = user.encode(), password.encode()
+                sock.sendall(b"\x01" + bytes([len(u)]) + u + bytes([len(pw)]) + pw)
+                if _recv_exact(sock, 2)[1] != 0:
+                    raise OSError("tailnet proxy authentication refused")
+            sock.sendall(b"\x05\x01\x00\x01" + ipaddress.IPv4Address(host).packed + port.to_bytes(2, "big"))
+            head = _recv_exact(sock, 4)
+            if head[:3] != b"\x05\x00\x00" or head[3] not in (1, 3, 4):
+                raise OSError("tailnet proxy could not reach the relay")
+            size = {1: 4, 4: 16}.get(head[3])
+            _recv_exact(sock, (size if size is not None else _recv_exact(sock, 1)[0]) + 2)
+        else:
+            target = f"{ipaddress.IPv4Address(host)}:{int(port)}"
+            req = f"CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n"
+            if user or password:
+                import base64
+                req += "Proxy-Authorization: Basic " + base64.b64encode(f"{user}:{password}".encode()).decode() + "\r\n"
+            sock.sendall((req + "\r\n").encode())
+            reply = b""
+            while not reply.endswith(b"\r\n\r\n"):
+                if len(reply) > 8192:
+                    raise OSError("tailnet proxy reply too long")
+                reply += _recv_exact(sock, 1)
+            if not re.match(rb"HTTP/1\.[01] 200[ \r]", reply):
+                raise OSError("tailnet proxy could not reach the relay")
+        return sock
+    except BaseException:
+        sock.close()
+        raise
+
+
+_forwarders: dict = {}
+
+
+def _pipe(src, dst):
+    try:
+        while data := src.recv(65536):
+            dst.sendall(data)
+    except OSError:
+        pass
+    finally:
+        for s in (src, dst):
+            try:
+                s.shutdown(2)
+            except OSError:
+                pass
+
+
+def _forward(conn, host, port):
+    try:
+        upstream = tailnet_connect(host, port, 15)
+    except Exception:
+        conn.close()
+        return
+    upstream.settimeout(None)
+    conn.settimeout(None)
+    t = threading.Thread(target=_pipe, args=(upstream, conn), daemon=True)
+    t.start()
+    _pipe(conn, upstream)
+    t.join()
+    conn.close()
+    upstream.close()
+
+
+def _forwarder_port(host: str, port: int) -> int:
+    """A loopback-only port in this container that tunnels each connection to the relay over the tailnet proxy.
+
+    yt-dlp and requests take one proxy URL, so they talk SOCKS5 to the relay through this port; the relay's
+    authentication and remote DNS stay end to end. Only the paired relay address is ever reached."""
+    import socket
+    key = (host, port, os.environ.get(TAILNET_PROXY_ENV, ""))
+    with _lock:
+        if key in _forwarders:
+            return _forwarders[key]
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(32)
+        def accept():
+            while True:
+                conn, _ = listener.accept()
+                threading.Thread(target=_forward, args=(conn, host, port), daemon=True).start()
+        threading.Thread(target=accept, daemon=True).start()
+        _forwarders[key] = listener.getsockname()[1]
+        return _forwarders[key]
+
+
+def relay_proxy() -> str:
+    """The proxy URL the downloader and catalog use for the home relay ("" when none)."""
+    value = relay()
+    proxy = tailnet_proxy()
+    if not value or proxy is None:
+        return value
+    if proxy == "invalid":
+        return value  # status says so; direct use fails like before rather than leaking past the relay
+    u = urllib.parse.urlsplit(value)
+    fport = _forwarder_port(u.hostname, u.port)
+    return f"socks5h://wizard:{urllib.parse.quote(u.password, safe='')}@127.0.0.1:{fport}"
 
 
 def set_relay(value: str) -> dict:
@@ -384,7 +540,7 @@ def _session():
     s = BoundedSession()
     if relay():
         s.trust_env = False
-        s.proxies.update({"http": relay(), "https": relay()})
+        s.proxies.update({"http": relay_proxy(), "https": relay_proxy()})
     return s
 
 
@@ -501,7 +657,7 @@ def audio(vid: str) -> Path:
         cmd = [YTDLP, "-q", "--no-warnings", "--no-cache-dir", "--no-playlist", "--js-runtimes", "node",
                "-f", "bestaudio[ext=m4a]/bestaudio", "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
         if relay():
-            cmd[1:1] = ["--proxy", relay()]
+            cmd[1:1] = ["--proxy", relay_proxy()]
         if AUTH.with_name("cookies.txt").exists():
             cmd[1:1] = ["--cookies", str(AUTH.with_name("cookies.txt"))]
         try:
@@ -532,7 +688,7 @@ def _live_cmd(tmp: Path, vid: str) -> list[str]:
            "--no-part", "--fixup", "never", "--no-simulate", "--print", "before_dl:%(filesize)s %(ext)s",
            "-f", "bestaudio[ext=m4a]/bestaudio", "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
     if relay():
-        cmd[1:1] = ["--proxy", relay()]
+        cmd[1:1] = ["--proxy", relay_proxy()]
     if AUTH.with_name("cookies.txt").exists():
         cmd[1:1] = ["--cookies", str(AUTH.with_name("cookies.txt"))]
     return cmd
@@ -727,6 +883,8 @@ def relay_status(d):
         "provider_blocked": "Relay probe reached a provider refusal (403/429). Not paired; check the home connection.",
         "failed": "Relay connectivity failed. Check Tailscale access, the home service and its token, then retry.",
     }
+    proxy = tailnet_proxy()
+    tailnet = "off" if proxy is None else "invalid" if proxy == "invalid" else "on"
     if state not in messages:
         state = "imported_unverified" if relay() else "not_configured"
     try:
@@ -736,7 +894,15 @@ def relay_status(d):
                    and RELAY_ORIGIN == f"https://{origin.netloc}" and bool(relay_import_key()))
     except ValueError:
         enabled = False
-    return {"state": state, "at": check.get("at", 0), "message": messages[state], "import_enabled": enabled}
+    message = messages[state]
+    if tailnet == "invalid":
+        message += (f" The tailnet proxy setting ({TAILNET_PROXY_ENV}) is not a valid socks5:// or http:// "
+                    "host:port address, so the relay is reached directly.")
+    elif tailnet == "on" and state == "failed":
+        message = ("Relay connectivity failed through the tailnet proxy. Check that this Wizard's Tailscale proxy "
+                   "is running and reachable from apps, the home service and its token, then retry.")
+    return {"state": state, "at": check.get("at", 0), "message": message, "import_enabled": enabled,
+            "tailnet_proxy": tailnet}
 
 
 class Handler(BaseHTTPRequestHandler):

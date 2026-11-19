@@ -10,6 +10,16 @@ At home, test playback directly. Cloud/VPS addresses may be blocked by YouTube; 
 
 The setup screen includes **Help me set this up**: a copyable, non-secret request and the shell's supported `wizard:open-app` / `agents` navigation. The owner chooses a chat and sends the request. There is no claimed automatic message delivery, notification or reply subscription. Standalone/older shells fall back to manual navigation. No agent identity is guessed.
 
+### Cloud Wizard with userspace Tailscale (tailnet proxy)
+
+Some cloud boxes run `tailscaled --tun=userspace-networking`. Then neither the host nor any app container has a route to the relay's `100.x` address, and relay import, the relay test and playback all fail. Userspace Tailscale can instead offer a proxy into the tailnet; point this connector at it:
+
+1. On the Wizard's host, start tailscaled with a SOCKS5 proxy (`--socks5-server=<addr>:1055`) or an HTTP proxy (`--outbound-http-proxy-listen=<addr>:1055`) on an address app containers can reach, such as the Docker bridge gateway (often `172.17.0.1`). Never bind it to a public interface: anyone who can reach it can reach your tailnet.
+2. Set the app setting **Tailnet proxy** (`WIZARD_TAILNET_PROXY`) to that proxy, for example `socks5://host.docker.internal:1055` or `http://host.docker.internal:1055` (`host.docker.internal` is the host, mapped in the compose file). Optional `user:password@` is sent to the proxy. Only `socks5://`, `socks5h://` and `http://` with a host and port are accepted; anything else shows as invalid in the relay status and is ignored.
+3. Pair the relay exactly as below. The pairing file and its `100.64.0.0/10` address are unchanged; the connector only opens its connection to that address through the proxy. Inside the container a loopback-only port carries yt-dlp's and the catalog's SOCKS5 traffic to the relay, so the relay's password and remote DNS stay end to end and nothing but the paired relay address is ever reached.
+
+`/api/status` `relay_status.tailnet_proxy` is `off`, `on` or `invalid` (never the address). **Test relay connectivity** goes through the proxy too, so a verified relay proves the whole path.
+
 ### Private file pairing (disabled until owner provisions access)
 
 This implements the home relay's `PAIRING.md` export contract, not remote installation or an automatic cross-device pairing service. **Do not upload a relay export to an agent, chat, email or public link.**
