@@ -90,7 +90,7 @@
     <p id="relay-sheet-state" class="ytm-status"></p>
     <ol>
       <li>Choose an always-on home computer. Ask your agent for the instructions matching Mac, Windows or Linux; do not run a Linux installer on Windows.</li>
-      <li>Connect the computer and Wizard to your own private Tailscale network. Keep the authenticated relay private; never open its port publicly.</li>
+      <li>Connect the computer and Wizard to your own private Tailscale network. Keep the authenticated relay private; never open its port publicly. If this Wizard's Tailscale runs in userspace mode (some cloud servers), also set the app's Tailnet proxy setting to its Tailscale proxy (see README).</li>
       <li>Install Wizard Home Relay using its reviewed platform instructions and export a new private pairing JSON file. Import it only here on your private authenticated HTTPS Wizard. Never attach it to chat: it contains a reusable secret.</li>
       <li>Confirm the file belongs to your home Tailscale device. Import, test relay connectivity, then test playback separately. Account connection is another independent check.</li>
     </ol>
