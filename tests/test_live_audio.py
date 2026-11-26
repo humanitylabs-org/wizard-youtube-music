@@ -13,13 +13,14 @@ import pytest
 FAKE = r'''#!/usr/bin/env python3
 import os, sys, time
 args = sys.argv[1:]
-out = args[args.index("-o") + 1].replace("%(ext)s", "m4a")
+ext = "webm" if args[args.index("-f") + 1].startswith("bestaudio[acodec=opus]") else "m4a"
+out = args[args.index("-o") + 1].replace("%(ext)s", ext)
 mode = os.environ["FAKE_MODE"]
 body = bytes(range(256)) * 4096  # 1 MiB
 if mode == "blocked":
     sys.stderr.write("ERROR: Sign in to confirm you're not a bot\n"); sys.exit(1)
 size = len(body) + (7 if mode == "short" else 0)
-print(f"{'NA' if mode == 'na' else size} m4a", flush=True)
+print(f"{'NA' if mode == 'na' else size} {ext}", flush=True)
 assert "--no-part" in args and "--fixup" in args
 with open(out, "wb") as fh:
     for i in range(0, len(body), 65536):
@@ -112,3 +113,50 @@ def test_an_unknown_size_streams_until_the_connection_closes(ytm, monkeypatch):
         assert r.headers['Content-Length'] is None
         assert r.read() == BODY
     assert (ytm.CACHE / 'sWcLccMuCA8.m4a').read_bytes() == BODY
+
+
+def test_codec_opus_asks_for_opus_and_caches_beside_the_aac_copy(ytm, monkeypatch):
+    """wizard-os#820: ?codec=opus takes itag 251 (Opus webm); without it the format string is the same as before."""
+    seen = []
+
+    def run(cmd, **k):
+        seen.append(cmd)
+        fmt = cmd[cmd.index('-f') + 1]
+        ext = 'webm' if fmt.startswith('bestaudio[acodec=opus]') else 'm4a'
+        Path([c for c in cmd if c.endswith('.%(ext)s')][0].replace('%(ext)s', ext)).write_bytes(ext.encode() * 10)
+        return type('P', (), {'returncode': 0, 'stderr': ''})()
+
+    monkeypatch.setattr(ytm.subprocess, 'run', run)
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/mp4' and r.read() == b'm4a' * 10
+    assert seen[-1][seen[-1].index('-f') + 1] == 'bestaudio[ext=m4a]/bestaudio'
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8?codec=opus', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/webm' and r.read() == b'webm' * 10
+    assert seen[-1][seen[-1].index('-f') + 1] == 'bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio'
+    assert sorted(p.name for p in ytm.CACHE.iterdir()) == ['sWcLccMuCA8.m4a', 'sWcLccMuCA8.opus.webm']
+    # both cached now: each variant comes from its own file, the AAC answer never turns into webm
+    n = len(seen)
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/mp4'
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8?codec=opus', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/webm'
+    assert len(seen) == n
+
+
+def test_live_codec_opus_uses_the_opus_format(ytm, monkeypatch):
+    assert ytm._live_cmd(Path('/x/t'), 'sWcLccMuCA8')[ytm._live_cmd(Path('/x/t'), 'sWcLccMuCA8').index('-f') + 1] == 'bestaudio[ext=m4a]/bestaudio'
+    cmd = ytm._live_cmd(Path('/x/t'), 'sWcLccMuCA8', 'opus')
+    assert cmd[cmd.index('-f') + 1] == 'bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio'
+    assert ytm._codec('flac') == 'aac' and ytm._codec('') == 'aac'
+
+
+def test_live_opus_streams_webm_and_caches_it_as_the_opus_variant(ytm, monkeypatch):
+    monkeypatch.setenv('FAKE_MODE', 'ok')
+    (ytm.tmp / 'go').touch()
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8?live=1&codec=opus', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/webm' and r.read() == BODY
+    assert (ytm.CACHE / 'sWcLccMuCA8.opus.webm').read_bytes() == BODY
+    assert not (ytm.CACHE / 'sWcLccMuCA8.m4a').exists()
+    with urllib.request.urlopen(ytm.base + '/api/music/audio/sWcLccMuCA8?live=1', timeout=10) as r:
+        assert r.headers['Content-Type'] == 'audio/mp4' and r.read() == BODY  # AAC is its own download
+    assert (ytm.CACHE / 'sWcLccMuCA8.m4a').exists()
