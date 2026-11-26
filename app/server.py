@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 APP_ID = "wizard-youtube-music"
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 CONTRACT = "wizard.music-source/1"
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
@@ -622,9 +622,25 @@ def genre_tracks(genre: str) -> list[dict]:
 # ---------------------------------------------------------------- audio
 
 
-def _cached(vid: str) -> Path | None:
+# Which audio stream yt-dlp takes. "aac" is the default every player can decode (itag 140, AAC 128k in m4a; Safari and
+# Apple's players need it). "opus" (wizard-os#820, asked for by Music with ?codec=opus) takes YouTube's best signed-out
+# stream, itag 251 (Opus ~130-160k, 48 kHz webm), and falls back to the AAC one when a song has no Opus.
+FORMATS = {"aac": "bestaudio[ext=m4a]/bestaudio", "opus": "bestaudio[acodec=opus]/bestaudio[ext=m4a]/bestaudio"}
+
+
+def _codec(value) -> str:
+    return "opus" if value == "opus" else "aac"
+
+
+def _key(vid: str, codec: str = "aac") -> str:
+    """Cache name of one variant: AAC keeps the plain id as before, Opus lives beside it as <id>.opus.<ext>."""
+    return f"{vid}.opus" if codec == "opus" else vid
+
+
+def _cached(vid: str, codec: str = "aac") -> Path | None:
+    key = _key(vid, codec)
     for ext in ("m4a", "webm", "opus", "mp3"):
-        p = CACHE / f"{vid}.{ext}"
+        p = CACHE / f"{key}.{ext}"
         if p.exists() and p.stat().st_size > 0:
             return p
     return None
@@ -640,22 +656,24 @@ def _evict() -> None:
         p.unlink(missing_ok=True)
 
 
-def audio(vid: str) -> Path:
+def audio(vid: str, codec: str = "aac") -> Path:
     if not YT_ID.match(vid):
         raise LookupError("bad id")
-    hit = _cached(vid)
+    codec = _codec(codec)
+    key = _key(vid, codec)
+    hit = _cached(vid, codec)
     if hit:
         os.utime(hit)
         return hit
     with _lock:
-        lock = _dl_locks.setdefault(vid, threading.Lock())
+        lock = _dl_locks.setdefault(key, threading.Lock())
     with lock:
-        hit = _cached(vid)
+        hit = _cached(vid, codec)
         if hit:
             return hit
-        tmp = CACHE / f".{vid}.{os.getpid()}.{threading.get_ident()}"
+        tmp = CACHE / f".{key}.{os.getpid()}.{threading.get_ident()}"
         cmd = [YTDLP, "-q", "--no-warnings", "--no-cache-dir", "--no-playlist", "--js-runtimes", "node",
-               "-f", "bestaudio[ext=m4a]/bestaudio", "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
+               "-f", FORMATS[codec], "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
         if relay():
             cmd[1:1] = ["--proxy", relay_proxy()]
         if AUTH.with_name("cookies.txt").exists():
@@ -672,7 +690,7 @@ def audio(vid: str) -> Path:
             low = (proc.stderr or "").lower()
             _record("blocked" if any(m in low for m in BLOCK_MARKERS) else "failed", "YouTube refused the download" if any(m in low for m in BLOCK_MARKERS) else "Download failed")
             raise RuntimeError("blocked" if any(m in low for m in BLOCK_MARKERS) else "download failed")
-        final = CACHE / f"{vid}{made[0].suffix}"
+        final = CACHE / f"{key}{made[0].suffix}"
         made[0].replace(final)
         _record("ok")
         _evict()
@@ -682,11 +700,11 @@ def audio(vid: str) -> Path:
 LIVE_SECONDS = 600  # the owner hears the song meanwhile, so a long mix may take longer than audio()'s 150 s (wizard-music#46)
 
 
-def _live_cmd(tmp: Path, vid: str) -> list[str]:
+def _live_cmd(tmp: Path, vid: str, codec: str = "aac") -> list[str]:
     """yt-dlp writing straight into one growing file, printing its exact size before the download starts."""
     cmd = [YTDLP, "-q", "--no-warnings", "--no-cache-dir", "--no-playlist", "--js-runtimes", "node",
            "--no-part", "--fixup", "never", "--no-simulate", "--print", "before_dl:%(filesize)s %(ext)s",
-           "-f", "bestaudio[ext=m4a]/bestaudio", "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
+           "-f", FORMATS[_codec(codec)], "-o", f"{tmp}.%(ext)s", f"https://music.youtube.com/watch?v={vid}"]
     if relay():
         cmd[1:1] = ["--proxy", relay_proxy()]
     if AUTH.with_name("cookies.txt").exists():
@@ -694,7 +712,7 @@ def _live_cmd(tmp: Path, vid: str) -> list[str]:
     return cmd
 
 
-def live_audio(vid: str, send_head, write) -> None:
+def live_audio(vid: str, send_head, write, codec: str = "aac") -> None:
     """Send a song while yt-dlp is still downloading it (wizard-music#46, asked for with ?live=1).
 
     send_head(size or None, ext) is called once the first bytes are on disk; write(bytes) gets the file as it grows.
@@ -702,19 +720,21 @@ def live_audio(vid: str, send_head, write) -> None:
     """
     if not YT_ID.match(vid):
         raise LookupError("bad id")
+    codec = _codec(codec)
+    key = _key(vid, codec)
     with _lock:
-        lock = _dl_locks.setdefault(vid, threading.Lock())
+        lock = _dl_locks.setdefault(key, threading.Lock())
     if not lock.acquire(blocking=False):  # this song is downloading already: wait for it, as before
         with lock:
             pass
-        hit = audio(vid)
+        hit = audio(vid, codec)
         send_head(hit.stat().st_size, hit.suffix[1:])
         with hit.open("rb") as fh:
             while chunk := fh.read(262144):
                 write(chunk)
         return
     try:
-        hit = _cached(vid)
+        hit = _cached(vid, codec)
         if hit:
             os.utime(hit)
             send_head(hit.stat().st_size, hit.suffix[1:])
@@ -722,13 +742,13 @@ def live_audio(vid: str, send_head, write) -> None:
                 while chunk := fh.read(262144):
                     write(chunk)
             return
-        tmp = CACHE / f".{vid}.{os.getpid()}.{threading.get_ident()}.live"
+        tmp = CACHE / f".{key}.{os.getpid()}.{threading.get_ident()}.live"
         err = tempfile.TemporaryFile()
-        proc = subprocess.Popen(_live_cmd(tmp, vid), stdout=subprocess.PIPE, stderr=err, text=True)
+        proc = subprocess.Popen(_live_cmd(tmp, vid, codec), stdout=subprocess.PIPE, stderr=err, text=True)
         timer = threading.Timer(LIVE_SECONDS, proc.kill)
         timer.start()
         try:
-            _live_send(vid, proc, err, tmp, send_head, write)
+            _live_send(key, proc, err, tmp, send_head, write)
         finally:
             timer.cancel()
             if proc.poll() is None:
@@ -956,9 +976,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, {"tracks": genre_tracks(q("genre"))})
             m = re.match(r"^/api/music/audio/([A-Za-z0-9_-]{11})$", path)
             if m and q("live") == "1":
-                return self.stream_live(m.group(1))
+                return self.stream_live(m.group(1), _codec(q("codec")))
             if m:
-                return self.stream(audio(m.group(1)))
+                return self.stream(audio(m.group(1), _codec(q("codec"))))
             name = "index.html" if path == "/" else path[1:]
             kind = STATIC.get(Path(name).suffix)
             f = ROOT / "web" / name
@@ -1039,7 +1059,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return self.send(502, {"error": "Request unavailable. Check connection status."})
 
-    def stream_live(self, vid: str):
+    def stream_live(self, vid: str, codec: str = "aac"):
         """The whole song from byte 0 while it downloads; the Music hub caches it and serves ranges itself."""
         sent = {"head": False}
 
@@ -1060,7 +1080,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.flush()
 
         try:
-            live_audio(vid, head, write)
+            live_audio(vid, head, write, codec)
         except Exception:
             if not sent["head"]:
                 raise
